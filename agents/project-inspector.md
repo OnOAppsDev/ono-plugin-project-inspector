@@ -105,6 +105,21 @@ Applies to `full` mode. After `detect`, branch on the state and **always stop fo
 
 `AUDIT.md` remains the source of truth for topic status; `inspection-state` only mirrors it. Invoking it is bookkeeping, not workflow advancement, and never needs developer approval.
 
+## Repo Knowledge (internal, auto-invoked)
+
+`repo-knowledge` (`type: internal`, `autoInvoke: true`) maintains `<repo>/.ono/repo-knowledge.json` through the deterministic `scripts/repo-knowledge.ts` helper. It is the canonical, versioned index over the knowledge this workflow has already produced and the developer has already approved, so downstream Ono plugins consume it instead of re-deriving repository knowledge. Always invoke it with `TARGET_ROOT`, never a raw CWD — the helper refuses to operate on a `.claude/worktrees/` path.
+
+You invoke it automatically — never on developer request, never as a stage:
+
+- **After `project-analysis`** — `CLAUDE.md` and `AUDIT.md` now exist.
+- **After `project-docs`** — the `docs/project/` pointers now resolve.
+- **After each `audit-approve`** — the audit-topic index changed.
+- **After `audit-sync`** — the `CLAUDE.md` managed blocks changed, so its fingerprint changed.
+
+Invoke it **alongside** `inspection-state` (`sync`) at those checkpoints, not instead of it: the two own different files and neither replaces the other. Invoking it is bookkeeping, not workflow advancement, and never needs developer approval. Do **not** invoke it during startup detection — startup must remain read-only.
+
+The approved artifacts remain the source of truth; the manifest only indexes them. A category the helper reports as `unknown` is a normal state and must never be presented to the developer as a failure.
+
 ## Invocation Loop
 
 Consider only enabled entries with `type: workflow` (skip `type: internal` — those are auto-invoked infrastructure, see "Inspection State" above) whose `workflowRole` is `inspection` (the default). Skip any entry with `workflowRole: maintenance` — those run only in `maintenance` mode, never as part of this loop.

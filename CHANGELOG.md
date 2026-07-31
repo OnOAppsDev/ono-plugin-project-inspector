@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 — 2026-07-28
+
+Made the plugin the single producer of repository knowledge for the Ono plugin ecosystem, by publishing a deterministic, versioned manifest downstream plugins consume instead of re-deriving repository facts from source.
+
+- Added the internal `repo-knowledge` skill (registry `type: internal`, `autoInvoke: true`) and `scripts/repo-knowledge.ts` (`emit` / `validate` / `show`). It owns one file, `<repo>/.ono/repo-knowledge.json`.
+- The manifest is **derived, never authored**: it indexes `CLAUDE.md`, `AUDIT.md`, and `docs/project/*.md` — artifacts the workflow already produced and a developer already approved. It reads no repository source and never reads an audit file's body, so it introduces no new analysis and no new approval gate.
+- It carries **pointers, not copies** (paths plus heading anchors), so the approved artifacts remain the source of truth, plus a fingerprint (git HEAD and per-artifact SHA-256) and per-category `coverage` (`populated` / `partial` / `unknown`) so a consumer can tell what it may trust and what it must still derive itself.
+- `project-analysis`'s `CLAUDE.md` template now emits a `<!-- repo-knowledge:facts:start/end -->` block mirroring the Tech Stack and Commands sections in a strict machine-readable subset, so those facts are indexed deterministically rather than parsed from prose. The helper falls back to the template's fixed bullet labels when the block is absent, so repositories inspected by earlier versions produce a manifest on the next `/inspect-sync` with no re-inspection.
+- `project-analysis`'s `CLAUDE.md` template no longer restates the full external-integrations inventory; it now carries a short summary plus a pointer to `docs/project/integrations.md`, removing a duplication internal to this plugin.
+- The agent invokes `repo-knowledge` (`emit`) alongside `inspection-state` (`sync`) after `project-analysis`, after `project-docs`, after each `audit-approve`, and after `audit-sync`. Startup detection remains read-only — `before-inspect` does not emit.
+- All four affected `after-*` hooks verify the manifest at the real root via `verify-artifacts.ts` and run `repo-knowledge.ts validate`, reporting any `unknown` category as information rather than failure.
+- `/inspect-sync` documents the on-demand refresh path. No new command.
+- Added `docs/repo-knowledge-contract.md` — the schema and the obligations a consumer accepts, pinned to schema v1 and duplicated verbatim in every participating plugin.
+- Added `scripts/repo-knowledge.test.ts`, the plugin's first automated test suite: fixture-based extraction, marker-block override, prose fallback, malformed-input degradation, byte-determinism, portability, and worktree refusal.
+- Corrected `.claude-plugin/marketplace.json`, which pinned `0.7.0` against `plugin.json`'s `0.8.0`.
+- No changes to the workflow shape, stage order, approval gates, the `Draft` → `Approved` single-writer rule, `AUDIT.md` as human source of truth, `inspection-state`, or `.ono/state.json`. No changes to any target repository's source code.
+
 ## 0.8.0 — 2026-07-09
 
 Fixed an architectural issue where, when Claude Code ran the workflow inside an agent git worktree (`.claude/worktrees/agent-<id>/`), artifacts were written into that ephemeral copy and the workflow still reported success — because writes, state, and completion checks all resolved to the same wrong root. The plugin now resolves and verifies the real target repository root (Options 1 + 3).

@@ -17,6 +17,20 @@
       "notes": "Internal infrastructure skill (not user-facing, no command). Owns <repo>/.ono/state.json via the deterministic scripts/inspection-state.ts helper. The agent invokes it automatically: at startup (detect prior inspection, version mismatch, migration, resume pointer) and after each stage/loop step (sync stages, topic snapshot, counts, resume). AUDIT.md stays the source of truth for topic status; this skill only mirrors it into portable orchestration state (no absolute paths). Excluded from the linear inspection loop and from maintenance because type is internal."
     },
     {
+      "id": "repo-knowledge",
+      "enabled": true,
+      "type": "internal",
+      "autoInvoke": true,
+      "stage": 0,
+      "path": "skills/repo-knowledge",
+      "produces": [".ono/repo-knowledge.json"],
+      "requires": [],
+      "repeatable": true,
+      "requiresApproval": false,
+      "hooks": {},
+      "notes": "Internal infrastructure skill (not user-facing, no command). Owns <repo>/.ono/repo-knowledge.json via the deterministic scripts/repo-knowledge.ts helper. The manifest is DERIVED from already-approved artifacts (CLAUDE.md, AUDIT.md, docs/project/*.md) so downstream Ono plugins consume canonical repository knowledge instead of re-deriving it; it reads no source files and never reads audit bodies. The agent invokes it automatically after project-analysis, after project-docs, after each audit-approve, and after audit-sync maintenance. Excluded from the linear inspection loop and from maintenance because type is internal."
+    },
+    {
       "id": "project-analysis",
       "enabled": true,
       "type": "workflow",
