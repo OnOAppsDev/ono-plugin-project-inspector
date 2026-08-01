@@ -26,7 +26,17 @@ No command invokes a skill directly by name — every command routes through the
 4. Stops for developer approval between every stage and after every Draft.
 5. Separately, on demand, `audit-sync` (documentation maintenance) folds the HIGH/MEDIUM findings of approved topics into managed blocks inside `CLAUDE.md` and checks the index for drift. It never approves anything and is not part of the linear workflow.
 
-See `docs/plugin-workflow.md` for the full step-by-step flow and `docs/architecture.md` for the design rationale.
+## Documentation
+
+Architecture and workflow documentation for the whole plugin ecosystem lives in the **marketplace repository**, [`OnOAppsDev/ono-plugin-marketplace`](https://github.com/OnOAppsDev/ono-plugin-marketplace), which is the single source of truth for it:
+
+| Document | Answers |
+|---|---|
+| [`docs/architecture/ecosystem-overview.html`](https://github.com/OnOAppsDev/ono-plugin-marketplace/blob/main/docs/architecture/ecosystem-overview.html) | **Start here.** How the plugins cooperate, what Repository Knowledge is, the complete Claude Code workflow, and how information flows between commands. |
+| [`docs/plugins/ono-plugin-project-inspector/plugin-architecture.md`](https://github.com/OnOAppsDev/ono-plugin-marketplace/blob/main/docs/plugins/ono-plugin-project-inspector/plugin-architecture.md) | How **this** plugin is built: registry-driven orchestration, skill types, approval gates, hooks, deterministic scripts, state and resume, worktree safety. |
+| [`docs/plugins/ono-plugin-project-inspector/inspection-workflow.md`](https://github.com/OnOAppsDev/ono-plugin-marketplace/blob/main/docs/plugins/ono-plugin-project-inspector/inspection-workflow.md) | What to type, in what order, and what each of the five commands does. |
+
+The one document that stays here is [`docs/repo-knowledge-contract.md`](docs/repo-knowledge-contract.md) — the outbound contract other Ono plugins consume. It ships with the plugin because the code that implements it lives here, and it is vendored byte-identically into each consuming plugin.
 
 ## Structure
 
@@ -40,9 +50,10 @@ commands/inspect-approve.md  /inspect-approve — finalize the reviewed Draft, t
 commands/inspect-sync.md     /inspect-sync — on-demand documentation-sync maintenance
 skills/                      vendored skills + registry.json (extensibility seam); includes internal inspection-state
 hooks/                       agent-read checkpoint instructions between stages
-scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state)
+scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state, .ono/repo-knowledge.json manifest)
 templates/                   reserved for future skills; unused by current skills by design
-docs/                        architecture and workflow documentation
+docs/repo-knowledge-contract.md   outbound contract consumed by other Ono plugins
+                             (architecture and workflow docs live in ono-plugin-marketplace)
 ```
 
 The plugin also maintains a committed, portable state file at `<target-repo>/.ono/state.json` (owned by the internal `inspection-state` skill) so an interrupted inspection resumes exactly where it left off. `AUDIT.md` remains the source of truth; the state file only mirrors it.
@@ -53,13 +64,14 @@ The plugin also maintains a committed, portable state file at `<target-repo>/.on
 2. Add one entry to `skills/registry.json` (with `type` = `workflow` or `internal`, and `role`/`pairsWith`/`workflowRole` as appropriate).
 3. Optionally add `hooks/after-<id>.md` and a command.
 
-A skill that fits an existing shape (a linear stage, a breakdown-approve loop partner, or an on-demand maintenance tool) needs no change to the agent or existing hooks; only a genuinely new orchestration pattern does. See `docs/architecture.md` for details.
+A skill that fits an existing shape (a linear stage, a breakdown-approve loop partner, or an on-demand maintenance tool) needs no change to the agent or existing hooks; only a genuinely new orchestration pattern does. See the plugin-architecture document in the marketplace repository for details.
 
 ## Status
 
 All skills are implemented and enabled:
 
 - `inspection-state` — enabled (internal infrastructure, auto-invoked; not user-facing)
+- `repo-knowledge` — enabled (internal infrastructure, auto-invoked; not user-facing)
 - `project-analysis` — enabled (stage 1, inspection)
 - `project-docs` — enabled (stage 2, inspection)
 - `audit-breakdown` — enabled (stage 3, inspection — breakdown half of the loop)
