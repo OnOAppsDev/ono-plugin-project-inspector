@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
   "name": "ono-project-inspector",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Inspects an existing software repository and gradually builds a structured AI knowledge base for it (CLAUDE.md, AUDIT.md, and per-topic audit documents). Uses a breakdown → approve loop for audit topics and an on-demand documentation-sync maintenance tool, and tracks resumable orchestration state in .ono/state.json. The workflow is fully registry-driven: stage order, produced artifacts, and completion are declared in registry.json. Never modifies source code. First plugin in the Ono internal AI Marketplace.",
   "author": {
     "name": "Ono Apps",

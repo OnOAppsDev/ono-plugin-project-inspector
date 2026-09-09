@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1 — 2026-09-09
+
+Housekeeping only. Deduplicated the repository-inspection shell policy and removed an obsolete embedded marketplace registration. **No workflow, stage, approval-gate, or output-contract behavior changed.**
+
+- Extracted the read-only shell policy into `docs/shell-execution-rules.md`. The allowed-command list (15 entries), the command-shape rules, and the forbidden-command list (17 entries) existed as three byte-identical copies in `project-analysis` (Step 4), `project-docs` (Step 5), and `audit-breakdown` (Step 6); a policy defining what may never be run is exactly what must not drift between copies. The extracted content is byte-identical to what it replaced.
+- **Each skill keeps its own redirection exception**, because that one line is the only part that was ever skill-specific: `project-analysis` writes "the final generated artifacts", `project-docs` "the four generated artifacts", `audit-breakdown` "the selected audit file and updating `AUDIT.md`". Each matches that skill's `produces` entry in `skills/registry.json`, which is unchanged. The shared file states the rule generically and defers to each skill's own wording as authoritative for that skill.
+- Step numbers and section headings are unchanged in all three skills, so every heading anchor still resolves.
+- Removed `.claude-plugin/marketplace.json`. It declared a marketplace (`ono-ai-marketplace`) that was never registered anywhere, listed this plugin against a `"source": "./"` nobody resolves, and duplicated a `version` that `.claude-plugin/plugin.json` already owns — the copy it had drifted from once before (see 0.9.0). Discovery, install, and source are owned by `ono-plugin-marketplace`, which installs this plugin as `ono-project-inspector@ono-plugin-marketplace` from its own `url` source; the version is owned here and read by `scripts/repo-knowledge.ts` and `scripts/inspection-state.ts`. Nothing in this repository referenced the deleted file, and the README's structure block never listed it. `.claude-plugin/plugin.json` is now the only metadata file in that directory.
+- No change to `skills/registry.json`, the commands, the agent, the hooks, the deterministic scripts, `docs/repo-knowledge-contract.md`, inspection state, or `.ono/` artifact production.
+
 ## 0.9.0 — 2026-07-28
 
 Made the plugin the single producer of repository knowledge for the Ono plugin ecosystem, by publishing a deterministic, versioned manifest downstream plugins consume instead of re-deriving repository facts from source.

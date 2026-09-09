@@ -128,56 +128,12 @@ Rules:
 
 ## Step 5: Shell Execution Rules
 
-Repository inspection must be strictly read-only.
+Repository inspection must be strictly read-only. Follow
+[`docs/shell-execution-rules.md`](../../docs/shell-execution-rules.md) in full: the allowed
+command list, the command-shape rules, and the forbidden list live there and are not
+restated here.
 
-Allowed commands include:
-
-```text
-ls
-find
-tree
-cat
-head
-tail
-grep
-rg
-wc
-file
-pwd
-git status
-git branch
-git log
-git show
-```
-
-Rules:
-
-- Prefer one command per action.
-- Avoid chaining unrelated commands with `&&`.
-- Avoid multiple `cd` operations inside one command.
 - Do not use output redirection except when writing the four generated artifacts through the normal workflow.
-
-Never use:
-
-```text
-rm
-mv
-cp
-touch
-tee
-sed -i
-perl -i
-git add
-git commit
-git checkout
-git switch
-git restore
-git clean
-git reset
-git revert
->
->>
-```
 
 ## Step 6: Existing File Handling
 
