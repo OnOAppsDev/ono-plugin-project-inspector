@@ -384,6 +384,79 @@ Just prose, no structure headings at all.
     check("13 no headings: coverage.structure unknown", mNone.coverage.structure === "unknown", mNone.coverage.structure);
     check("13 no headings: all three pointers null", JSON.stringify(mNone.structure) === JSON.stringify({ repositoryTree: null, keyModules: null, entryPoints: null }), JSON.stringify(mNone.structure));
   }
+
+  // --- Scenario 14: knowledgeHead — only regeneration advances it, never a re-emit ---
+  {
+    const kh = join(root, "knowledge-head");
+    initRepo(kh);
+    write(kh, "src/app.ts", "export const app = 1;\n");
+    write(kh, "CLAUDE.md", "# CLAUDE.md — Demo\n");
+    write(kh, "AUDIT.md", AUDIT_MD);
+    for (const f of ["overview", "components", "patterns", "integrations"]) write(kh, `docs/project/${f}.md`, `# ${f}\n`);
+    git(kh, "add", "-A");
+    git(kh, "commit", "-qm", "source + artifacts");
+    const p = join(kh, ".ono", "repo-knowledge.json");
+
+    run(["emit", kh]);
+    const m0 = JSON.parse(readFileSync(p, "utf-8"));
+    check("14 no recorded regeneration: knowledgeHead null", m0.fingerprint.knowledgeHead === null, JSON.stringify(m0.fingerprint));
+
+    // Both source-backed stages regenerated knowledge at H1 (recorded through inspection-state).
+    const h1 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: kh, encoding: "utf-8" }).trim();
+    for (const stage of ["project-analysis", "project-docs"]) {
+      execFileSync(RUNTIME, [join(HERE, "inspection-state.ts"), "record-knowledge", kh, stage], { stdio: "ignore" });
+    }
+    run(["emit", kh]);
+    const m1 = JSON.parse(readFileSync(p, "utf-8"));
+    check("14 after regeneration: knowledgeHead = H1", m1.fingerprint.knowledgeHead === h1, `${m1.fingerprint.knowledgeHead} vs ${h1}`);
+
+    // Source moves to H2; a routine re-emit (what /inspect-sync does) must not advance it.
+    write(kh, "src/app.ts", "export const app = 2;\n");
+    git(kh, "add", "-A");
+    git(kh, "commit", "-qm", "change source");
+    const h2 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: kh, encoding: "utf-8" }).trim();
+    run(["emit", kh]);
+    const m2 = JSON.parse(readFileSync(p, "utf-8"));
+    check("14 re-emit: gitHead follows HEAD (emit time)", m2.fingerprint.gitHead === h2);
+    check("14 re-emit: knowledgeHead NOT advanced", m2.fingerprint.knowledgeHead === h1, `${m2.fingerprint.knowledgeHead}`);
+
+    // Determinism still holds with the new field.
+    const again = JSON.parse((run(["emit", kh]), readFileSync(p, "utf-8")));
+    delete again.generatedAt;
+    delete m2.generatedAt;
+    check("14 determinism with knowledgeHead", JSON.stringify(again) === JSON.stringify(m2));
+
+    // A lost state file must never make stale knowledge look fresh: the prior
+    // manifest's knowledgeHead is carried forward, never replaced by HEAD.
+    rmSync(join(kh, ".ono", "state.json"));
+    run(["emit", kh]);
+    const m3 = JSON.parse(readFileSync(p, "utf-8"));
+    check("14 state lost: knowledgeHead carried from prior manifest", m3.fingerprint.knowledgeHead === h1, `${m3.fingerprint.knowledgeHead}`);
+  }
+
+  // --- Scenario 15: old manifests without knowledgeHead remain valid ---
+  {
+    const old = join(root, "old-manifest");
+    initRepo(old);
+    run(["emit", old]);
+    const p = join(old, ".ono", "repo-knowledge.json");
+    const m = JSON.parse(readFileSync(p, "utf-8"));
+    delete m.fingerprint.knowledgeHead;
+    writeFileSync(p, JSON.stringify(m, null, 2) + "\n", "utf-8");
+    const r = run(["validate", old]);
+    check("15 old manifest (no knowledgeHead) validates", r.code === 0, `code=${r.code} stderr=${r.stderr}`);
+
+    m.fingerprint.knowledgeHead = 42;
+    writeFileSync(p, JSON.stringify(m, null, 2) + "\n", "utf-8");
+    check("15 non-string knowledgeHead is rejected", run(["validate", old]).code === 2);
+
+    // Re-emitting over an old manifest yields null, never HEAD.
+    delete m.fingerprint.knowledgeHead;
+    writeFileSync(p, JSON.stringify(m, null, 2) + "\n", "utf-8");
+    run(["emit", old]);
+    const re = JSON.parse(readFileSync(p, "utf-8"));
+    check("15 re-emit over old manifest: knowledgeHead null", re.fingerprint.knowledgeHead === null, JSON.stringify(re.fingerprint));
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

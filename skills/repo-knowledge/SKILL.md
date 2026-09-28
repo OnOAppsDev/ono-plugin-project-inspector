@@ -31,6 +31,8 @@ The approved artifacts remain the source of truth. This manifest is an **index o
 
 Prose is never copied into the manifest. Consumers receive a path and an anchor and read the artifact themselves.
 
+The one non-artifact input is `repository.knowledgeHead` from the plugin's own `.ono/state.json`, mirrored as `fingerprint.knowledgeHead`: the HEAD at which source-backed Project Knowledge was last actually generated. Emitting never advances it — only `inspection-state` `record-knowledge`, run after a source-backed stage regenerates, does. If state has none, the previous manifest's value is carried forward; failing that it is `null`. It is never set to the current HEAD by an emit. `fingerprint.gitHead` remains the HEAD at emit time.
+
 ## Output Contract
 
 This skill may create or modify only:
@@ -47,7 +49,7 @@ All logic lives in `scripts/repo-knowledge.ts` (run with a TypeScript runner, e.
 
 | Command | Purpose |
 |---------|---------|
-| `emit <repo-root>` | Rebuild the manifest from the current approved artifacts and write it. Idempotent. |
+| `emit <repo-root>` | Rebuild the manifest from the current approved artifacts and write it. Idempotent. Re-indexes only — never refreshes Project Knowledge or advances `fingerprint.knowledgeHead`. |
 | `validate <repo-root>` | Structural validation of an existing manifest. Exit 2 if absent or invalid. |
 | `show <repo-root>` | Print the manifest (read-only). |
 
@@ -77,7 +79,8 @@ The manifest is committed to Git alongside `.ono/state.json`, so a teammate who 
 ## Hard Constraints
 
 - Only create or modify `<repository-root>/.ono/repo-knowledge.json`.
-- Never read repository source files. Only `CLAUDE.md`, `AUDIT.md`, and `docs/project/*.md`.
+- Never read repository source files. Only `CLAUDE.md`, `AUDIT.md`, and `docs/project/*.md` (plus `repository.knowledgeHead` from `.ono/state.json`).
+- Never advance `fingerprint.knowledgeHead` on an emit, and never derive it from the current HEAD.
 - Never read the body of an `audits/*.md` file — the manifest carries the topic index only.
 - Never copy prose into the manifest; emit a path and an anchor instead.
 - Never fabricate a value for a category that could not be parsed — report `unknown`.

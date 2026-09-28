@@ -1,6 +1,6 @@
 {
   "$schemaVersion": 1,
-  "description": "Extensibility seam for the Ono Project Inspector plugin. The orchestrating agent (agents/project-inspector.md) reads this file to decide which skills exist, in what order, how they connect to hooks, and how they relate to each other. Each skill declares a `type`: `workflow` (a normal registry-driven skill the agent sequences) or `internal` (auto-invoked infrastructure the agent calls automatically at checkpoints — not a workflow stage, no command, no approval gate; marked `autoInvoke: true`). For `workflow` skills, `workflowRole` further distinguishes the linear inspection sequence (`inspection`, the default) from on-demand maintenance tools (`maintenance`). `role`/`pairsWith` express intra-stage relationships such as the breakdown-approve loop. For `workflow`+`inspection` skills, `produces` (the artifacts a stage writes) plus `completion` are the single source of truth for stage completion and resume: `completion: \"artifacts\"` (the default when omitted) means the stage is complete when all of its `produces` exist on disk; `completion: \"topics\"` means completion is derived from the AUDIT.md topic table (no Pending Breakdown and no Draft rows). The deterministic scripts/inspection-state.ts helper reads these fields — it contains no hardcoded stage list. Adding a new linear workflow skill therefore requires only its skills/<id>/SKILL.md folder plus one entry here (with `stage`, `type`, `workflowRole`, `produces`, and optionally `completion`). Adding a skill never requires editing the agent when it fits an existing shape.",
+  "description": "Extensibility seam for the Ono Project Inspector plugin. The orchestrating agent (agents/project-inspector.md) reads this file to decide which skills exist, in what order, how they connect to hooks, and how they relate to each other. Each skill declares a `type`: `workflow` (a normal registry-driven skill the agent sequences) or `internal` (auto-invoked infrastructure the agent calls automatically at checkpoints — not a workflow stage, no command, no approval gate; marked `autoInvoke: true`). For `workflow` skills, `workflowRole` further distinguishes the linear inspection sequence (`inspection`, the default) from on-demand maintenance tools (`maintenance`). `role`/`pairsWith` express intra-stage relationships such as the breakdown-approve loop. For `workflow`+`inspection` skills, `produces` (the artifacts a stage writes) plus `completion` are the single source of truth for stage completion and resume: `completion: \"artifacts\"` (the default when omitted) means the stage is complete when all of its `produces` exist on disk; `completion: \"topics\"` means completion is derived from the AUDIT.md topic table (no Pending Breakdown and no Draft rows). The deterministic scripts/inspection-state.ts helper reads these fields — it contains no hardcoded stage list. Adding a new linear workflow skill therefore requires only its skills/<id>/SKILL.md folder plus one entry here (with `stage`, `type`, `workflowRole`, `produces`, and optionally `completion`). Adding a skill never requires editing the agent when it fits an existing shape. `sourceBacked: true` marks an inspection stage that reads repository source to produce Project Knowledge; only such a stage may record the knowledge-authoring HEAD (scripts/inspection-state.ts record-knowledge). `knowledgeRefresh` is its policy when /inspect detects source drift on a completed inspection: `default` (always re-run in Update mode) or `when-signaled` (re-run only when a build/dependency/CI manifest changed or a top-level entry appeared/disappeared).",
   "skills": [
     {
       "id": "inspection-state",
@@ -40,6 +40,8 @@
       "path": "skills/project-analysis",
       "produces": ["CLAUDE.md", "AUDIT.md"],
       "completion": "artifacts",
+      "sourceBacked": true,
+      "knowledgeRefresh": "when-signaled",
       "requires": [],
       "repeatable": false,
       "requiresApproval": true,
@@ -64,6 +66,8 @@
         "docs/project/integrations.md"
       ],
       "completion": "artifacts",
+      "sourceBacked": true,
+      "knowledgeRefresh": "default",
       "requires": ["CLAUDE.md"],
       "repeatable": false,
       "requiresApproval": true,

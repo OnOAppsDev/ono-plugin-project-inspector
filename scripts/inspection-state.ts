@@ -26,6 +26,10 @@
  *                                           Reconcile topics/counts/stages/resume from
  *                                           AUDIT.md + on-disk artifacts, then write
  *   set-stage <repo-root> <stage> <status>  Record a stage's status, then write
+ *   record-knowledge <repo-root> <stage>    Record that a source-backed stage just
+ *                                           (re)generated Project Knowledge at the
+ *                                           current git HEAD (the knowledge-authoring
+ *                                           HEAD), then write
  *   migrate <repo-root>                     Migrate an older schema to current, then write
  *
  * Exit codes:
@@ -35,6 +39,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "fs";
+import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify";
 
@@ -56,12 +61,25 @@ interface TopicState {
 interface StageState {
   status: "pending" | "in-progress" | "complete";
   completedAt: string | null;
+  /**
+   * Source-backed stages only: git HEAD at which this stage last (re)generated
+   * Project Knowledge. Written exclusively by `record-knowledge`; every other
+   * command carries it forward unchanged. Absent in pre-0.10.0 state files.
+   */
+  knowledgeHead?: string | null;
+  knowledgeRegeneratedAt?: string | null;
 }
 
 interface InspectionState {
   stateSchemaVersion: number;
   plugin: { name: string; version: string };
-  repository: { gitRemote: string | null; gitHead: string | null };
+  /**
+   * `gitHead` is the HEAD at the last `sync` (bookkeeping time). `knowledgeHead`
+   * is the HEAD at which source-backed Project Knowledge was last actually
+   * generated — the only value drift detection trusts. Only `record-knowledge`
+   * writes it. Absent in pre-0.10.0 state files.
+   */
+  repository: { gitRemote: string | null; gitHead: string | null; knowledgeHead?: string | null };
   createdAt: string;
   updatedAt: string;
   inspection: {
@@ -86,6 +104,10 @@ interface RegistryStage {
   stage: number;
   produces: string[];
   completion: "artifacts" | "topics";
+  /** Reads repository source to produce Project Knowledge (e.g. CLAUDE.md, docs/project/). */
+  sourceBacked: boolean;
+  /** Refresh policy on source drift: always re-run ("default"), or only on analysis signals ("when-signaled"). */
+  knowledgeRefresh: "default" | "when-signaled" | null;
 }
 
 /**
@@ -105,6 +127,9 @@ function loadInspectionStages(): RegistryStage[] {
         stage: typeof s.stage === "number" ? s.stage : 0,
         produces: Array.isArray(s.produces) ? s.produces.map(String) : [],
         completion: s.completion === "topics" ? "topics" : "artifacts",
+        sourceBacked: s.sourceBacked === true,
+        knowledgeRefresh:
+          s.knowledgeRefresh === "default" || s.knowledgeRefresh === "when-signaled" ? s.knowledgeRefresh : null,
       }) as RegistryStage)
       .sort((a, b) => a.stage - b.stage);
   } catch {
@@ -184,7 +209,7 @@ function freshState(gitRemote: string | null): InspectionState {
   return {
     stateSchemaVersion: STATE_SCHEMA_VERSION,
     plugin: currentPluginVersion(),
-    repository: { gitRemote: gitRemote ?? null, gitHead: null },
+    repository: { gitRemote: gitRemote ?? null, gitHead: null, knowledgeHead: null },
     createdAt: ts,
     updatedAt: ts,
     inspection: { started: false, completedStages: [], currentStage: null, stage3Complete: false },
@@ -301,6 +326,160 @@ function migrateState(state: InspectionState): InspectionState {
   return s;
 }
 
+// --- Project Knowledge freshness (derived on every detect, never persisted) ---
+
+/**
+ * Inspector-owned outputs. A change confined to these is the workflow's own
+ * bookkeeping (committing artifacts, audit-sync, approvals), never evidence
+ * that the repository's source moved away from the knowledge.
+ */
+export function isInspectorOwned(rel: string): boolean {
+  return (
+    rel === "CLAUDE.md" ||
+    rel === "AUDIT.md" ||
+    rel === "CLAUDE.md.bak" ||
+    rel === "AUDIT.md.bak" ||
+    rel.startsWith(".ono/") ||
+    rel.startsWith("docs/project/") ||
+    rel.startsWith("audits/")
+  );
+}
+
+/**
+ * Generic, ecosystem-neutral build / dependency / CI manifests. A change to one
+ * can move what project-analysis recorded in CLAUDE.md (stack, commands), so it
+ * signals that project-analysis should re-run too. Matched on basename.
+ */
+const ANALYSIS_MANIFEST_BASENAMES = new Set([
+  "package.json", "pnpm-workspace.yaml", "lerna.json", "nx.json", "turbo.json",
+  "Podfile", "Package.swift", "Cartfile", "project.pbxproj",
+  "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+  "pom.xml", "Cargo.toml", "go.mod", "pyproject.toml", "setup.py", "setup.cfg",
+  "requirements.txt", "Pipfile", "Gemfile", "pubspec.yaml", "composer.json",
+  "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+  ".gitlab-ci.yml", "Jenkinsfile",
+]);
+
+function isAnalysisManifest(rel: string): boolean {
+  const base = rel.split("/").pop() ?? rel;
+  return (
+    ANALYSIS_MANIFEST_BASENAMES.has(base) ||
+    /\.csproj$/.test(base) ||
+    rel.startsWith(".github/workflows/") ||
+    rel.startsWith(".circleci/")
+  );
+}
+
+function git(repoRoot: string, args: string[]): string | null {
+  try {
+    return execFileSync("git", args, { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function currentGitHead(repoRoot: string): string | null {
+  return git(repoRoot, ["rev-parse", "HEAD"]) || null;
+}
+
+type KnowledgeStatus = "COMPLETE" | "REFRESH_RECOMMENDED" | "BASELINE_UNKNOWN" | "NOT_APPLICABLE";
+
+interface KnowledgeFreshness {
+  status: KnowledgeStatus;
+  knowledgeHead: string | null;
+  currentHead: string | null;
+  reason: string;
+  changedSourceCount: number;
+  /** Sorted; capped at MAX_LISTED_FILES — changedSourceCount is the full count. */
+  changedSourceFiles: string[];
+  refreshPlan: { stages: string[]; analysisSignals: string[] };
+}
+
+const MAX_LISTED_FILES = 50;
+
+/**
+ * Registry-ordered refresh stages for the given drift evidence. A stage already
+ * regenerated at the current HEAD (an interrupted refresh) is not re-run.
+ */
+function refreshStages(
+  stages: RegistryStage[],
+  analysisSignalled: boolean,
+  state: InspectionState,
+  currentHead: string | null
+): string[] {
+  return stages
+    .filter((st) => st.sourceBacked)
+    .filter((st) => !currentHead || state.stages[st.id]?.knowledgeHead !== currentHead)
+    .filter((st) => st.knowledgeRefresh === "default" || (st.knowledgeRefresh === "when-signaled" && analysisSignalled))
+    .map((st) => st.id);
+}
+
+/**
+ * Compare the knowledge-authoring HEAD with the current HEAD. Only meaningful
+ * once the inspection is complete; an in-progress inspection is still
+ * producing its knowledge and keeps its normal resume behavior.
+ */
+function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, stages: RegistryStage[]): KnowledgeFreshness {
+  const knowledgeHead = state.repository?.knowledgeHead ?? null;
+  const currentHead = currentGitHead(repoRoot);
+  const base = { knowledgeHead, currentHead, changedSourceCount: 0, changedSourceFiles: [] as string[] };
+  const none = { stages: [] as string[], analysisSignals: [] as string[] };
+
+  if (!state.inspection?.stage3Complete) {
+    return { ...base, status: "NOT_APPLICABLE", reason: "Inspection not complete; knowledge is still being produced.", refreshPlan: none };
+  }
+  const unknown = (reason: string): KnowledgeFreshness => ({
+    ...base,
+    status: "BASELINE_UNKNOWN",
+    reason,
+    refreshPlan: { stages: refreshStages(stages, false, state, currentHead), analysisSignals: [] },
+  });
+  if (!knowledgeHead) {
+    return unknown("No knowledge-authoring HEAD recorded (inspected before knowledgeHead existed). Freshness cannot be established.");
+  }
+  if (!currentHead) return unknown("Current git HEAD cannot be determined.");
+  if (git(repoRoot, ["cat-file", "-e", `${knowledgeHead}^{commit}`]) === null) {
+    return unknown(`Recorded knowledgeHead ${knowledgeHead.slice(0, 12)} is not in this repository's history (rewritten or shallow).`);
+  }
+  if (knowledgeHead === currentHead) {
+    return { ...base, status: "COMPLETE", reason: "Knowledge was generated at the current HEAD.", refreshPlan: none };
+  }
+
+  const diff = git(repoRoot, ["diff", "--name-only", "--no-renames", knowledgeHead, currentHead]);
+  if (diff === null) return unknown("git diff between knowledgeHead and HEAD failed.");
+  const changed = Array.from(new Set(diff.split("\n").filter((l) => l.length > 0)))
+    .filter((rel) => !isInspectorOwned(rel))
+    .sort();
+  if (changed.length === 0) {
+    return { ...base, status: "COMPLETE", reason: "Only Inspector-owned artifacts changed since knowledge was generated.", refreshPlan: none };
+  }
+
+  // Analysis signals: a build/dependency/CI manifest changed, or a top-level
+  // entry appeared or disappeared (the repository structure CLAUDE.md records).
+  const topAt = (rev: string): Set<string> =>
+    new Set((git(repoRoot, ["ls-tree", "--name-only", rev]) ?? "").split("\n").filter(Boolean));
+  const topBefore = topAt(knowledgeHead);
+  const topNow = topAt(currentHead);
+  const signals = new Set<string>();
+  for (const rel of changed) {
+    if (isAnalysisManifest(rel)) signals.add(`build/dependency manifest changed: ${rel}`);
+    const top = rel.split("/")[0];
+    if (!topBefore.has(top)) signals.add(`top-level entry added: ${top}`);
+    else if (!topNow.has(top)) signals.add(`top-level entry removed: ${top}`);
+  }
+  const analysisSignals = Array.from(signals).sort();
+
+  return {
+    knowledgeHead,
+    currentHead,
+    status: "REFRESH_RECOMMENDED",
+    reason: `${changed.length} source file(s) changed since knowledge was generated.`,
+    changedSourceCount: changed.length,
+    changedSourceFiles: changed.slice(0, MAX_LISTED_FILES),
+    refreshPlan: { stages: refreshStages(stages, analysisSignals.length > 0, state, currentHead), analysisSignals },
+  };
+}
+
 // --- commands ---
 
 function cmdDetect(repoRoot: string): void {
@@ -334,6 +513,7 @@ function cmdDetect(repoRoot: string): void {
         stage3Complete: state.inspection.stage3Complete,
         counts: state.counts,
         resume: state.resume,
+        knowledge: computeKnowledgeFreshness(state, repoRoot, loadInspectionStages()),
       },
       null,
       2
@@ -375,7 +555,9 @@ function cmdSync(repoRoot: string, gitRemote: string | null, gitHead: string | n
       : isStageInProgress(st, repoRoot, state.counts)
       ? "in-progress"
       : prev?.status ?? "pending";
-    state.stages[st.id] = { status, completedAt: complete ? prev?.completedAt ?? nowIso() : null };
+    // Spread `prev` so knowledgeHead / knowledgeRegeneratedAt survive: a routine
+    // sync is bookkeeping and must never advance or erase knowledge freshness.
+    state.stages[st.id] = { ...prev, status, completedAt: complete ? prev?.completedAt ?? nowIso() : null };
   }
 
   // Completed stages, current stage, and "topic loop done" all derive from registry order.
@@ -405,6 +587,7 @@ function cmdSetStage(repoRoot: string, stage: string, status: string): void {
   }
   const prev = state.stages[stage];
   state.stages[stage] = {
+    ...prev,
     status: status as StageState["status"],
     completedAt: status === "complete" ? prev?.completedAt ?? nowIso() : prev?.completedAt ?? null,
   };
@@ -413,6 +596,56 @@ function cmdSetStage(repoRoot: string, stage: string, status: string): void {
     .map(([k]) => k);
   writeState(repoRoot, state);
   console.log(`Stage "${stage}" set to "${status}".`);
+  process.exit(0);
+}
+
+/**
+ * The single writer of the knowledge-authoring HEAD. Called by a source-backed
+ * stage's after-hook only once its regenerated artifacts are verified at the
+ * real root. Refuses any stage that does not read source, and any stage whose
+ * artifacts are missing, so bookkeeping can never claim knowledge is fresh.
+ */
+function cmdRecordKnowledge(repoRoot: string, stageId: string): void {
+  const stages = loadInspectionStages();
+  const stage = stages.find((st) => st.id === stageId);
+  if (!stage || !stage.sourceBacked) {
+    console.error(`"${stageId}" is not a source-backed inspection stage; it cannot record regenerated knowledge.`);
+    process.exit(1);
+  }
+  const missing = stage.produces.filter((p) => !p.includes("<")).filter((rel) => !existsSync(join(repoRoot, rel)));
+  if (missing.length) {
+    console.error(`Refusing to record knowledge for "${stageId}": missing ${missing.join(", ")}.`);
+    process.exit(1);
+  }
+  const head = currentGitHead(repoRoot);
+  if (!head) {
+    console.error("Cannot determine git HEAD; knowledge-authoring HEAD not recorded.");
+    process.exit(1);
+  }
+  let state = readState(repoRoot) ?? freshState(null);
+  state = migrateState(state);
+  const ts = nowIso();
+  const prev = state.stages[stageId];
+  state.stages[stageId] = {
+    ...prev,
+    status: "complete",
+    completedAt: prev?.completedAt ?? ts,
+    knowledgeHead: head,
+    knowledgeRegeneratedAt: ts,
+  };
+  // Later source-backed stages consume earlier ones' output (project-docs reads
+  // CLAUDE.md), so the knowledge set is current at `head` only once every
+  // downstream source-backed stage has also regenerated at `head`. Until then an
+  // interrupted multi-stage refresh keeps reporting REFRESH_RECOMMENDED.
+  const downstreamCurrent = stages
+    .filter((st) => st.sourceBacked && st.stage > stage.stage)
+    .every((st) => state.stages[st.id]?.knowledgeHead === head);
+  if (downstreamCurrent) state.repository = { ...state.repository, knowledgeHead: head };
+  writeState(repoRoot, state);
+  console.log(
+    `Recorded knowledgeHead ${head.slice(0, 12)} for "${stageId}"` +
+      (downstreamCurrent ? "; Project Knowledge is current at this HEAD." : "; downstream source-backed stages still need regeneration.")
+  );
   process.exit(0);
 }
 
@@ -436,7 +669,7 @@ function cmdMigrate(repoRoot: string): void {
 function main(): void {
   const [, , command, repoRoot, ...rest] = process.argv;
   if (!command || !repoRoot) {
-    console.error("Usage: inspection-state.ts <detect|init|sync|set-stage|migrate> <repo-root> [args...]");
+    console.error("Usage: inspection-state.ts <detect|init|sync|set-stage|record-knowledge|migrate> <repo-root> [args...]");
     process.exit(1);
   }
   if (!existsSync(repoRoot)) {
@@ -469,6 +702,12 @@ function main(): void {
         process.exit(1);
       }
       return cmdSetStage(repoRoot, rest[0], rest[1]);
+    case "record-knowledge":
+      if (!rest[0]) {
+        console.error("Usage: inspection-state.ts record-knowledge <repo-root> <stage>");
+        process.exit(1);
+      }
+      return cmdRecordKnowledge(repoRoot, rest[0]);
     case "migrate":
       return cmdMigrate(repoRoot);
     default:
