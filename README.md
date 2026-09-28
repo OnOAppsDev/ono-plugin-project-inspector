@@ -8,11 +8,11 @@ This is not an implementation assistant. It never modifies source code, never wr
 
 | Command | Responsibility |
 |---|---|
-| `/inspect [repo-path]` | Run or resume the complete guided workflow end to end. Default entry point. |
+| `/inspect [repo-path]` | Run or resume the complete guided workflow end to end. Default entry point. On a completed inspection whose source changed since Project Knowledge was generated, offers **Refresh Project Knowledge**. |
 | `/inspect-status [repo-path]` | Read-only progress report: artifacts present, audit topic counts, enabled/disabled skills, recommended next action. Invokes no skill. |
 | `/inspect-topic [topic-name] [repo-path]` | Jump straight to breaking down one audit topic (or the next pending one), skipping the general narrative. |
 | `/inspect-approve [repo-path]` | Approve the current gate: finalize the reviewed audit Draft (`Draft` → `Approved`) and break down the next topic, or advance one non-repeatable stage. |
-| `/inspect-sync [repo-path]` | Run the `audit-sync` documentation-maintenance tool on demand: refresh the managed blocks in `CLAUDE.md` from approved audits, verify consistency, repair drift. Not part of the linear workflow. |
+| `/inspect-sync [repo-path]` | Run the `audit-sync` documentation-maintenance tool on demand: refresh the managed blocks in `CLAUDE.md` from approved audits, verify consistency, repair drift. Not part of the linear workflow. Never refreshes source-backed Project Knowledge. |
 
 No command invokes a skill directly by name — every command routes through the `project-inspector` agent, which is the only thing that knows how to sequence skills.
 
@@ -24,7 +24,8 @@ No command invokes a skill directly by name — every command routes through the
    - `audit-breakdown` expands one topic into a `Draft` audit document under `audits/<topic-slug>/` and stops for review.
    - `audit-approve` finalizes the reviewed Draft (`Draft` → `Approved` in `AUDIT.md`) — it is the single owner of that transition — after which the next topic is broken down automatically.
 4. Stops for developer approval between every stage and after every Draft.
-5. Separately, on demand, `audit-sync` (documentation maintenance) folds the HIGH/MEDIUM findings of approved topics into managed blocks inside `CLAUDE.md` and checks the index for drift. It never approves anything and is not part of the linear workflow.
+5. Once complete, keeps Project Knowledge current: the HEAD at which source-backed knowledge was generated is recorded, and when later source changes are detected `/inspect` offers **Refresh Project Knowledge** — `project-docs` (plus `project-analysis` when build manifests or top-level structure changed) re-run in Update mode under a guard that preserves every audit status and `CLAUDE.md` managed block. No re-audit.
+6. Separately, on demand, `audit-sync` (documentation maintenance) folds the HIGH/MEDIUM findings of approved topics into managed blocks inside `CLAUDE.md` and checks the index for drift. It never approves anything and is not part of the linear workflow.
 
 ## Documentation
 
@@ -50,7 +51,8 @@ commands/inspect-approve.md  /inspect-approve — finalize the reviewed Draft, t
 commands/inspect-sync.md     /inspect-sync — on-demand documentation-sync maintenance
 skills/                      vendored skills + registry.json (extensibility seam); includes internal inspection-state
 hooks/                       agent-read checkpoint instructions between stages
-scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state, .ono/repo-knowledge.json manifest)
+scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state and knowledge drift,
+                             .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard) + *.test.ts suites
 templates/                   reserved for future skills; unused by current skills by design
 docs/repo-knowledge-contract.md   outbound contract consumed by other Ono plugins
                              (architecture and workflow docs live in ono-plugin-marketplace)

@@ -9,8 +9,11 @@
  * Design contract:
  * - DERIVED, NEVER AUTHORED. It reads only artifacts the workflow has already
  *   produced and a human has already approved: CLAUDE.md, AUDIT.md, and
- *   docs/project/*.md. It never reads repository source, so it introduces no
+ *   docs/project/*.md — plus the knowledge-authoring HEAD from the plugin's own
+ *   .ono/state.json. It never reads repository source, so it introduces no
  *   new analysis and no new approval gate.
+ * - EMIT NEVER REFRESHES KNOWLEDGE. Re-emitting only re-indexes the artifacts;
+ *   `fingerprint.knowledgeHead` is carried, never advanced, by an emit.
  * - POINTERS, NOT COPIES. Prose stays in the approved artifact; the manifest
  *   carries paths plus heading anchors so consumers can cite a section.
  * - PORTABLE. Only repo-relative paths, hashes, and the git SHA are persisted.
@@ -78,7 +81,18 @@ export interface RepoKnowledge {
   repoKnowledgeSchemaVersion: number;
   producedBy: { plugin: string; version: string };
   generatedAt: string;
-  fingerprint: { gitHead: string | null; artifacts: Record<string, string | null> };
+  fingerprint: {
+    /** HEAD at emit time. Advances on every emit, including a metadata-only re-emit. */
+    gitHead: string | null;
+    /**
+     * HEAD at which source-backed Project Knowledge was last actually generated.
+     * Mirrored from `.ono/state.json` `repository.knowledgeHead`, which only
+     * `inspection-state.ts record-knowledge` writes — so an emit never advances
+     * it. Optional: absent in manifests produced before 0.10.0; `null` = unknown.
+     */
+    knowledgeHead?: string | null;
+    artifacts: Record<string, string | null>;
+  };
   coverage: Record<string, Coverage>;
   stack: {
     languages: string[];
@@ -336,6 +350,28 @@ function coverageForNullable(values: Array<string | null>): Coverage {
   return filled === values.length ? "populated" : "partial";
 }
 
+function readJson(p: string): any {
+  try {
+    return existsSync(p) ? JSON.parse(readFileSync(p, "utf-8")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The knowledge-authoring HEAD. Inspection state is authoritative; the prior
+ * manifest's value is carried forward only if state has none (e.g. state.json
+ * was lost). It is never derived from the current HEAD — that is exactly the
+ * value that would make stale knowledge look fresh.
+ */
+function knowledgeHead(repoRoot: string): string | null {
+  const fromState = readJson(join(repoRoot, ".ono", "state.json"))?.repository?.knowledgeHead;
+  if (typeof fromState === "string" && fromState.length) return fromState;
+  const fromManifest = readJson(manifestPath(repoRoot))?.fingerprint?.knowledgeHead;
+  if (typeof fromManifest === "string" && fromManifest.length) return fromManifest;
+  return null;
+}
+
 export function buildManifest(repoRoot: string): RepoKnowledge {
   const claudeMd = readIfExists(repoRoot, "CLAUDE.md");
   const auditMd = readIfExists(repoRoot, "AUDIT.md");
@@ -391,7 +427,7 @@ export function buildManifest(repoRoot: string): RepoKnowledge {
     repoKnowledgeSchemaVersion: REPO_KNOWLEDGE_SCHEMA_VERSION,
     producedBy: currentPlugin(),
     generatedAt: new Date().toISOString(),
-    fingerprint: { gitHead: gitHead(repoRoot), artifacts },
+    fingerprint: { gitHead: gitHead(repoRoot), knowledgeHead: knowledgeHead(repoRoot), artifacts },
     coverage,
     stack,
     commands,
@@ -412,6 +448,9 @@ export function validateManifest(value: unknown): string[] {
   if (!m.producedBy?.plugin) errors.push("producedBy.plugin missing");
   if (typeof m.generatedAt !== "string") errors.push("generatedAt missing");
   if (!m.fingerprint || typeof m.fingerprint.artifacts !== "object") errors.push("fingerprint.artifacts missing");
+  // Optional (additive in schema v1): absent is valid; present must be sha or null.
+  const kh = (m.fingerprint as { knowledgeHead?: unknown } | undefined)?.knowledgeHead;
+  if (kh !== undefined && kh !== null && typeof kh !== "string") errors.push("fingerprint.knowledgeHead must be a string or null");
   if (!m.coverage || typeof m.coverage !== "object") errors.push("coverage missing");
   if (!m.documents || typeof m.documents !== "object") errors.push("documents missing");
   if (!Array.isArray(m.auditTopics)) errors.push("auditTopics is not an array");

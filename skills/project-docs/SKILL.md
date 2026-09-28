@@ -142,6 +142,8 @@ restated here.
 | Overwrite | Replace the target files directly |
 | Update | Preserve useful existing structure and refresh content |
 | Preserve | Skip files that already exist |
+
+Update is the mode the orchestrator uses for **Refresh Project Knowledge** on a completed inspection: re-derive each of the four files from the current source, keeping the section structure (headings, and therefore their anchors, where the subject still exists) so downstream citations keep resolving. Update never touches `CLAUDE.md`, `AUDIT.md`, or `audits/` — same as every other mode.
 | Version | Save `<file>.bak`, then write new files |
 
 Never modify source code.

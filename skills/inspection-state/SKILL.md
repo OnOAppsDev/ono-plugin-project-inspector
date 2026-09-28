@@ -57,10 +57,11 @@ All state logic lives in `scripts/inspection-state.ts` (run with a TypeScript ru
 
 | Command | Purpose |
 |---------|---------|
-| `detect <repo-root>` | Print JSON: inspected?, stored vs current plugin/schema version, `versionMismatch`, `needsMigration`, completed stages, counts, resume pointer. Always exits 0. |
+| `detect <repo-root>` | Print JSON: inspected?, stored vs current plugin/schema version, `versionMismatch`, `needsMigration`, completed stages, counts, resume pointer, and the derived `knowledge` freshness block (see "Project Knowledge freshness"). Always exits 0. |
 | `init <repo-root> [gitRemote]` | Create `state.json` if absent (idempotent). |
 | `sync <repo-root> [gitRemote] [gitHead]` | Reconcile the topic snapshot, counts, per-stage completion, and the resume pointer, then write. Stage identity, order, produced artifacts, and completion are read from `skills/registry.json` — the helper has no hardcoded stage list. |
 | `set-stage <repo-root> <stage> <status>` | Record a non-topic stage's status (`pending`/`in-progress`/`complete`). |
+| `record-knowledge <repo-root> <stage>` | Record that a `sourceBacked` stage just regenerated Project Knowledge at the current git HEAD. The **only** writer of the knowledge-authoring HEAD. Exits 1 for a non-source-backed stage, missing stage artifacts, or no git HEAD. |
 | `migrate <repo-root>` | Migrate an older `stateSchemaVersion` forward to the current one. |
 
 ## When the Agent Invokes This
@@ -71,6 +72,22 @@ The agent calls this skill automatically — the developer never asks for it:
 2. **After each inspection stage and each Stage 3 loop step** (project-analysis, project-docs, each audit-breakdown Draft, each audit-approve finalize): run `sync` so completed stages, topic statuses, counts, and the resume pointer stay current.
 3. **In `status` mode** (`/inspect-status`): run `detect` for an instant, accurate snapshot (falling back to reading `AUDIT.md` if no state file exists yet).
 4. **After `audit-sync` maintenance**: run `sync` (the helper refreshes `maintenance.lastSyncAt` on write).
+5. **After a source-backed stage's artifacts are verified** (`hooks/after-project-analysis.md`, `hooks/after-project-docs.md`, first run or refresh): run `record-knowledge <repo-root> <stage>`. Never from any other hook or mode.
+
+## Project Knowledge freshness
+
+`stages.<id>.knowledgeHead` is the git HEAD at which a `sourceBacked` stage (registry) last regenerated its knowledge; `repository.knowledgeHead` is the HEAD at which the whole source-backed knowledge set is current. `record-knowledge` stamps the stage, and advances `repository.knowledgeHead` only when every downstream source-backed stage is already stamped at the same HEAD — an interrupted multi-stage refresh therefore never looks complete. `sync`, `set-stage`, and `migrate` carry both values forward and never advance them.
+
+`detect` derives — never persists — `knowledge.status`:
+
+| Status | Condition |
+|---|---|
+| `NOT_APPLICABLE` | Inspection not complete (`stage3Complete: false`). Normal resume behavior applies. |
+| `COMPLETE` | `repository.knowledgeHead` equals HEAD, or every file changed between them is Inspector-owned. |
+| `REFRESH_RECOMMENDED` | At least one non-Inspector-owned file changed between `repository.knowledgeHead` and HEAD. |
+| `BASELINE_UNKNOWN` | No `repository.knowledgeHead` (pre-0.10.0 state), it is not in history, or git is unavailable. |
+
+Inspector-owned (never drift evidence): `.ono/**`, `CLAUDE.md`, `AUDIT.md`, `CLAUDE.md.bak`, `AUDIT.md.bak`, `docs/project/**`, `audits/**`. The block also carries `knowledgeHead`, `currentHead`, `reason`, `changedSourceCount`, `changedSourceFiles` (sorted, first 50), and `refreshPlan: { stages, analysisSignals }` — registry-ordered source-backed stages to re-run: every `knowledgeRefresh: "default"` stage, plus `"when-signaled"` stages when a build/dependency/CI manifest changed or a top-level entry was added/removed, minus any stage already stamped at the current HEAD.
 
 ## state.json Shape (schema v1)
 
@@ -78,11 +95,11 @@ The agent calls this skill automatically — the developer never asks for it:
 {
   "stateSchemaVersion": 1,
   "plugin": { "name": "ono-project-inspector", "version": "0.6.0" },
-  "repository": { "gitRemote": "git@github.com:org/repo.git or null", "gitHead": "sha or null" },
+  "repository": { "gitRemote": "git@github.com:org/repo.git or null", "gitHead": "sha at last sync, or null", "knowledgeHead": "sha at which Project Knowledge was generated, or null (optional)" },
   "createdAt": "ISO-8601",
   "updatedAt": "ISO-8601",
   "inspection": { "started": true, "completedStages": ["project-analysis"], "currentStage": "project-docs", "stage3Complete": false },
-  "stages": { "project-analysis": { "status": "complete", "completedAt": "ISO" }, "...": {} },
+  "stages": { "project-analysis": { "status": "complete", "completedAt": "ISO", "knowledgeHead": "sha (optional)", "knowledgeRegeneratedAt": "ISO (optional)" }, "...": {} },
   "topics": [ { "index": "1", "topic": "Architecture", "slug": "architecture", "status": "Approved", "file": "audits/architecture/architecture-audit.md", "draftedAt": "ISO", "approvedAt": "ISO" } ],
   "counts": { "pendingBreakdown": 0, "draft": 0, "approved": 1, "total": 1 },
   "resume": { "nextAction": "review-draft | breakdown-next | run-stage | stage3-complete | idle", "topic": "or null", "hint": "human-readable next step" },

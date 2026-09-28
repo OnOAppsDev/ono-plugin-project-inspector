@@ -147,6 +147,13 @@ Before writing, check whether `CLAUDE.md` or `AUDIT.md` already exist.
 | Preserve | Skip existing files |
 | Version | Save `CLAUDE.md.bak` / `AUDIT.md.bak`, then write new files |
 
+**Update mode must preserve approved inspection work.** Update is the mode the orchestrator uses for **Refresh Project Knowledge** on a completed inspection, and a deterministic guard (`scripts/knowledge-refresh-guard.ts`) verifies the result afterwards. In Update mode:
+
+- Keep every existing `## Audit Topics` row: same topic name, same `Status`, same `File` reference. Never reset a topic to `Pending Breakdown`, never change `Draft` or `Approved`, never rewrite a `File` path, and never delete a row. Keep any `Approved <YYYY-MM-DD>` note `audit-approve` wrote in `Notes` (you may append to `Notes`, not replace it).
+- You may append a **new** topic row (next `#`, `Pending Breakdown`, `Not created yet`) when the source changed enough to warrant one.
+- Copy both `<!-- audit-sync:important-files:... -->` and `<!-- audit-sync:caution-areas:... -->` blocks from the existing `CLAUDE.md` byte-for-byte, markers included. Their content belongs to `audit-sync`; do not reset them to the template placeholder.
+- Refresh everything else — overview, stack, commands, structure, the `repo-knowledge:facts` block, cross-cutting observations — from the current source.
+
 Never modify source code.
 
 ---

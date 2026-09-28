@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0 — 2026-09-28
+
+Project Knowledge staleness recovery (producer side). A completed inspection now has a safe, generic path back to fresh knowledge after source changes: `COMPLETE` → source drift → `REFRESH_RECOMMENDED` → `/inspect` → **Refresh Project Knowledge** → `COMPLETE`.
+
+- **Fixed:** `/inspect-sync` (and every other re-emit) could stamp `.ono/repo-knowledge.json` with the current HEAD without regenerating the knowledge documents, making stale Project Knowledge look fresh. Emits now carry a separate, never-advanced-by-emit `fingerprint.knowledgeHead`.
+- Added the knowledge-authoring HEAD. `scripts/inspection-state.ts record-knowledge <root> <stage>` is its single writer, allowed only for registry `sourceBacked: true` stages (`project-analysis`, `project-docs`) whose artifacts exist, and called only from their after-hooks. It stamps `stages.<id>.knowledgeHead` and advances `repository.knowledgeHead` only once every downstream source-backed stage is at the same HEAD, so an interrupted two-stage refresh never looks complete. `sync` / `set-stage` now carry these fields forward (previously `sync` rebuilt each stage entry and would have dropped them).
+- `inspection-state detect` derives (never persists) a `knowledge` block for completed inspections: `COMPLETE`, `REFRESH_RECOMMENDED`, `BASELINE_UNKNOWN`, or `NOT_APPLICABLE`, with changed source files and a registry-driven `refreshPlan`. Inspector-owned paths (`.ono/**`, `CLAUDE.md`, `AUDIT.md`, their `.bak`s, `docs/project/**`, `audits/**`) are never drift evidence.
+- Refresh plan: `project-docs` by default (`knowledgeRefresh: "default"`); `project-analysis` (`"when-signaled"`) only when a build/dependency/CI manifest changed or a top-level entry appeared/disappeared, or on developer request. No audit stage is ever re-run.
+- `/inspect` Smart Startup branch C now offers **Refresh Project Knowledge** on drift (recommended) or unknown baseline (optional). It runs through the normal Invocation Loop, after-hooks, and approval gates. No new command.
+- Added `scripts/knowledge-refresh-guard.ts` (`snapshot` / `verify`): a refresh must keep every `AUDIT.md` topic row, status, file reference, and `Approved <date>` note, and every `CLAUDE.md` `audit-sync:*` managed block byte-identical. The after-hooks run `verify` before recording the knowledge HEAD and stop on a violation. `project-analysis` Update mode now states these preservation rules explicitly.
+- `repo-knowledge` emits `fingerprint.knowledgeHead` (from state; else carried from the prior manifest; else `null`) and validates it as optional. Schema stays v1 (additive). Contract (Inspector copy) documents Guarantee 7 and producer-side drift.
+- Added `scripts/inspection-state.test.ts` and `scripts/knowledge-refresh-guard.test.ts`; extended `scripts/repo-knowledge.test.ts`.
+
 ## 0.9.1 — 2026-09-09
 
 Housekeeping only. Deduplicated the repository-inspection shell policy and removed an obsolete embedded marketplace registration. **No workflow, stage, approval-gate, or output-contract behavior changed.**

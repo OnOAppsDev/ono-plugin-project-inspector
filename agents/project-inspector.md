@@ -51,10 +51,10 @@ You are invoked by one of five commands, each declaring a mode. Behave according
 
 - **`resume`** (from `/inspect-approve`) — An explicit developer approval. Its meaning depends on what is awaiting approval:
   - If a Stage 3 `audit-breakdown` Draft is awaiting review, `resume` **finalizes it**: invoke `audit-approve` on that Draft topic, then — per "Stage 3: The Breakdown-Approve Loop" — immediately invoke `audit-breakdown` for the next `Pending Breakdown` topic and stop at that new Draft's review gate. If no `Pending Breakdown` topics remain after approval, report that Stage 3 is complete instead of drafting again.
-  - Otherwise (a non-repeatable stage is awaiting approval, e.g. `project-analysis` or `project-docs`), advance exactly one step to the next unblocked stage.
+  - Otherwise (a non-repeatable stage is awaiting approval, e.g. `project-analysis` or `project-docs`), advance exactly one step to the next unblocked stage. During a "Refresh Project Knowledge" run, the next step is the next stage in `detect.knowledge.refreshPlan.stages`; if that list is empty, the refresh is finished — report the `knowledge.status`.
   Never advance more than this per invocation.
 
-- **`maintenance`** (from `/inspect-sync`) — Run the on-demand maintenance tool. Find the enabled registry entry with `workflowRole: maintenance` that matches the requested work (currently `audit-sync`); if more than one matches, ask which. Run its normal Prerequisite check, Before-hook (if any), Invoke, and After-hook steps for that one entry only. Do not run any inspection stage in this mode, and do not treat this as advancing the inspection workflow — it is documentation maintenance over already-approved topics.
+- **`maintenance`** (from `/inspect-sync`) — Run the on-demand maintenance tool. Find the enabled registry entry with `workflowRole: maintenance` that matches the requested work (currently `audit-sync`); if more than one matches, ask which. Run its normal Prerequisite check, Before-hook (if any), Invoke, and After-hook steps for that one entry only. Do not run any inspection stage in this mode, and do not treat this as advancing the inspection workflow — it is documentation maintenance over already-approved topics. Maintenance re-indexes artifacts and never refreshes Project Knowledge: never call `inspection-state` `record-knowledge` in this mode. If the repository has source drift, say so in the report and point to `/inspect` → **Refresh Project Knowledge**.
 
 ## Startup Sequence
 
@@ -89,10 +89,31 @@ Applies to `full` mode. After `detect`, branch on the state and **always stop fo
 
 **C. Inspection complete** (`detect.stage3Complete: true`, `resume.nextAction: stage3-complete`)
 - Report completion: every topic is Approved and all inspection stages are done.
-- Offer **maintenance only** and wait:
-  1. **Run documentation sync** (`/inspect-sync`) — include only if Approved topics exist.
-  2. **Leave everything unchanged** — stop.
-- Do not offer to run workflow stages; there is nothing left to run.
+- Branch on `detect.knowledge.status` — derived by `inspection-state` on every `detect` from the recorded knowledge-authoring HEAD versus the current HEAD, ignoring Inspector-owned paths (`.ono/**`, `CLAUDE.md`, `AUDIT.md`, `docs/project/**`, `audits/**`). It is never persisted; do not re-derive it yourself.
+  - **`COMPLETE`** (no source drift) — offer **maintenance only** and wait:
+    1. **Run documentation sync** (`/inspect-sync`) — include only if Approved topics exist.
+    2. **Leave everything unchanged** — stop.
+    Do not offer to run workflow stages; there is nothing left to run.
+  - **`REFRESH_RECOMMENDED`** (source changed since Project Knowledge was generated) — report `knowledge.reason`, the short `knowledgeHead` → `currentHead`, `changedSourceCount` with up to ten of `changedSourceFiles`, and the planned stages in `knowledge.refreshPlan.stages` with any `analysisSignals`. Then offer and wait:
+    1. **Refresh Project Knowledge** (recommended) — run "Refresh Project Knowledge" below with `refreshPlan.stages`. If the developer asks to include `project-analysis` although it is not planned, include it (it always runs before `project-docs`).
+    2. **Run documentation sync** (`/inspect-sync`) — include only if Approved topics exist. Say plainly that this does **not** refresh Project Knowledge.
+    3. **Leave everything unchanged** — stop.
+  - **`BASELINE_UNKNOWN`** (no knowledge-authoring HEAD recorded — e.g. inspected before 0.10.0 — or it is not in this repository's history) — say that freshness cannot be established, report `knowledge.reason`, and offer the same three choices, with **Refresh Project Knowledge** labelled optional rather than recommended. A completed refresh records the baseline, so later runs can detect drift.
+- Never run a full re-audit because source changed: a refresh re-runs only the source-backed knowledge stages, never `audit-breakdown` / `audit-approve`, and never changes an audit topic's status.
+
+## Refresh Project Knowledge
+
+Entered only from Smart Startup branch C on the developer's explicit choice. It re-runs the smallest set of source-backed stages (registry `sourceBacked: true`) that the current artifact granularity allows, through the normal Invocation Loop steps, so every after-hook, verification, and approval gate still applies. By default that is `project-docs` alone (`knowledgeRefresh: "default"`); `project-analysis` (`knowledgeRefresh: "when-signaled"`) joins only when `detect` reports analysis signals (a build/dependency/CI manifest changed, or a top-level entry appeared or disappeared) or the developer asks for it.
+
+For each stage in the plan, in registry `stage` order:
+
+1. **Preservation snapshot** — run `bun scripts/knowledge-refresh-guard.ts snapshot <TARGET_ROOT>`. It records every `AUDIT.md` topic row (status, file reference, approval note) and every `CLAUDE.md` `audit-sync:*` managed block.
+2. **Prerequisite check** and **Invoke** exactly as in the Invocation Loop (the `before-inspect` hook already ran at startup; do not repeat it). Tell the skill that the developer chose **Refresh Project Knowledge**, that existing artifacts are handled in **Update** mode, and that this is a refresh that must preserve approved work (the skill's own Update-mode rules say exactly what). Let the skill ask and confirm its own questions.
+3. **After-hook** — follow the stage's after-hook. In refresh mode it runs `knowledge-refresh-guard.ts verify` **before** recording the knowledge-authoring HEAD; on a guard failure (exit 3) STOP: report the violations, tell the developer to restore the named files from Git, and do not record knowledge, emit the manifest, or continue.
+4. **Update state** — `inspection-state` (`sync`), as always.
+5. **Approval gate** — the stage keeps `requiresApproval: true`: stop after it. On approval (`/inspect-approve`), continue with the next planned stage.
+
+When the last planned stage passes, re-run `inspection-state` (`detect`) and report `knowledge.status` — it is `COMPLETE` once every planned stage regenerated at the current HEAD. An interrupted refresh is safe: the knowledge-authoring HEAD advances only when every downstream source-backed stage has regenerated at the same HEAD, so the next `/inspect` still reports `REFRESH_RECOMMENDED` and its plan lists only the stages not yet refreshed.
 
 ## Inspection State (internal, auto-invoked)
 
@@ -102,6 +123,7 @@ Applies to `full` mode. After `detect`, branch on the state and **always stop fo
 - **After each inspection step** — after `project-analysis`, after `project-docs`, after each `audit-breakdown` Draft, and after each `audit-approve` finalize, invoke `inspection-state` (`sync`) so completed stages, the topic snapshot, counts, and the `resume` pointer stay current.
 - **In `status` mode** — invoke it (`detect`) for a fast, accurate snapshot; fall back to reading `AUDIT.md` if no state file exists yet.
 - **After `audit-sync` maintenance** — invoke it (`sync`) to refresh state.
+- **Knowledge-authoring HEAD** — `record-knowledge <TARGET_ROOT> <stage>` is called only from the after-hook of a source-backed stage (`project-analysis`, `project-docs`), after that stage's artifacts are verified at the real root (and, during a refresh, after the preservation guard passes). It is the only writer of the knowledge-authoring HEAD; `sync` carries it forward and never advances it.
 
 `AUDIT.md` remains the source of truth for topic status; `inspection-state` only mirrors it. Invoking it is bookkeeping, not workflow advancement, and never needs developer approval.
 
@@ -117,6 +139,8 @@ You invoke it automatically — never on developer request, never as a stage:
 - **After `audit-sync`** — the `CLAUDE.md` managed blocks changed, so its fingerprint changed.
 
 Invoke it **alongside** `inspection-state` (`sync`) at those checkpoints, not instead of it: the two own different files and neither replaces the other. Invoking it is bookkeeping, not workflow advancement, and never needs developer approval. Do **not** invoke it during startup detection — startup must remain read-only.
+
+Every emit sets `fingerprint.gitHead` to the HEAD at emit time, but carries `fingerprint.knowledgeHead` (the knowledge-authoring HEAD) from `.ono/state.json` unchanged — so re-emitting after `audit-approve`, `audit-sync`, or `/inspect-sync` can never make stale Project Knowledge look current.
 
 The approved artifacts remain the source of truth; the manifest only indexes them. A category the helper reports as `unknown` is a normal state and must never be presented to the developer as a failure.
 

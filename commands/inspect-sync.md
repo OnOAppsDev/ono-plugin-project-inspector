@@ -16,4 +16,6 @@ It does not mark anything Approved — finalizing a Draft is `audit-approve`'s j
 
 This command is also the on-demand way to refresh `<repo>/.ono/repo-knowledge.json` — the canonical repository-knowledge manifest that downstream Ono plugins read instead of re-analyzing the repository. The agent refreshes it automatically after every stage that changes repository knowledge; running `/inspect-sync` regenerates it for a repository that was inspected by an earlier plugin version and therefore has no manifest yet. Regeneration is idempotent and derives only from artifacts already approved — it re-reads no source code and re-runs no inspection stage.
 
+`/inspect-sync` is maintenance, not a knowledge refresh. Re-emitting the manifest updates `fingerprint.gitHead` (emit time) but never advances `fingerprint.knowledgeHead` (the HEAD at which Project Knowledge was actually generated), so it cannot make stale knowledge look current. If source code has changed since the knowledge was generated, run `/inspect` and choose **Refresh Project Knowledge**.
+
 $ARGUMENTS
