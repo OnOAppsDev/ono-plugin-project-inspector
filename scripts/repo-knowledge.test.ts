@@ -13,6 +13,17 @@ import { execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
+import {
+  writeApp,
+  writeKnowledge,
+  writeFamily,
+  surfacesSection,
+  capabilitiesMd,
+  FAMILIES,
+  APP_CAPABILITIES,
+  APP_RELATIONSHIPS,
+  REL_NAVIGATES,
+} from "./fixtures/knowledge-fixtures";
 
 const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
 const HELPER = join(HERE, "repo-knowledge.ts");
@@ -390,9 +401,10 @@ Just prose, no structure headings at all.
     const kh = join(root, "knowledge-head");
     initRepo(kh);
     write(kh, "src/app.ts", "export const app = 1;\n");
-    write(kh, "CLAUDE.md", "# CLAUDE.md — Demo\n");
+    // record-knowledge only certifies a stage whose output satisfies the
+    // current knowledge model, so the fixture carries the full model.
+    writeApp(kh);
     write(kh, "AUDIT.md", AUDIT_MD);
-    for (const f of ["overview", "components", "patterns", "integrations"]) write(kh, `docs/project/${f}.md`, `# ${f}\n`);
     git(kh, "add", "-A");
     git(kh, "commit", "-qm", "source + artifacts");
     const p = join(kh, ".ono", "repo-knowledge.json");
@@ -456,6 +468,211 @@ Just prose, no structure headings at all.
     run(["emit", old]);
     const re = JSON.parse(readFileSync(p, "utf-8"));
     check("15 re-emit over old manifest: knowledgeHead null", re.fingerprint.knowledgeHead === null, JSON.stringify(re.fingerprint));
+  }
+  // --- Scenario 16: surfaces, surface-scoped anchors, capabilities and relationships are indexed ---
+  const appRepo = join(root, "app");
+  initRepo(appRepo);
+  writeApp(appRepo);
+  git(appRepo, "add", "-A");
+  git(appRepo, "commit", "-qm", "app");
+  {
+    const r = run(["emit", appRepo]);
+    check("16 emit: exit 0", r.code === 0, `code=${r.code} stderr=${r.stderr}`);
+    const m = JSON.parse(readFileSync(join(appRepo, ".ono", "repo-knowledge.json"), "utf-8"));
+    check("16 schema stays v1 (additive)", m.repoKnowledgeSchemaVersion === 1);
+    check("16 surfaces[] structural, document order", JSON.stringify(m.surfaces?.map((s: any) => s.id)) === JSON.stringify(["web", "tizen"]), JSON.stringify(m.surfaces));
+    const tv = m.surfaces?.find((s: any) => s.id === "tizen");
+    check("16 surface fields", tv?.formFactor === "tv" && tv?.platform === "Samsung Tizen (React)" && tv?.packaging === ".wgt widget" && tv?.minimumRuntime === "Tizen 6.0", JSON.stringify(tv));
+    check("16 surface source roots + sharedWith", JSON.stringify(tv?.sourceRoots) === JSON.stringify(["src/tv/", "tizen/"]) && JSON.stringify(tv?.sharedWith) === JSON.stringify(["web"]), JSON.stringify(tv));
+    check("16 surface evidence carried as refs", JSON.stringify(tv?.evidence) === JSON.stringify(["tizen/config.xml::required_version=\"6.0\""]), JSON.stringify(tv?.evidence));
+    check("16 sharedCode[] represented once", m.sharedCode?.length === 1 && JSON.stringify(m.sharedCode[0].sharedBy) === JSON.stringify(["tizen", "web"]), JSON.stringify(m.sharedCode));
+    check("16 stable surfaces pointer", m.structure?.surfaces === "CLAUDE.md#targets-and-surfaces", JSON.stringify(m.structure));
+    check("16 structure coverage unaffected by the new pointer", m.coverage?.structure === "populated", m.coverage?.structure);
+    check("16 coverage.surfaces populated", m.coverage?.surfaces === "populated", JSON.stringify(m.coverage));
+    check("16 coverage.capabilities populated", m.coverage?.capabilities === "populated", JSON.stringify(m.coverage));
+
+    check("16 capabilities document indexed", m.documents?.capabilities?.path === "docs/project/capabilities.md" && m.documents.capabilities.exists === true);
+    check("16 capability anchors indexed", m.documents?.capabilities?.anchors?.includes("#capability-epg") && m.documents.capabilities.anchors.includes("#relationships"), JSON.stringify(m.documents?.capabilities?.anchors));
+    check("16 capabilities.md fingerprinted", typeof m.fingerprint?.artifacts?.["docs/project/capabilities.md"] === "string");
+
+    check("16 surface-aware anchors on conventions",
+      JSON.stringify(m.documents?.conventions?.surfaceAnchors) === JSON.stringify({ tizen: [{ section: "#input-and-interaction", anchor: "#input-and-interaction-tizen" }] }),
+      JSON.stringify(m.documents?.conventions?.surfaceAnchors));
+    check("16 shared convention indexed once", m.documents.conventions.anchors.filter((a: string) => a === "#input-and-interaction").length === 1);
+    check("16 surfaceAnchors present (empty) on docs without overrides", JSON.stringify(m.documents?.inventory?.surfaceAnchors) === "{}", JSON.stringify(m.documents?.inventory));
+
+    const ids = m.capabilities?.map((c: any) => c.id);
+    check("16 capabilities[] sorted by id", JSON.stringify(ids) === JSON.stringify(["channels", "epg", "player", "search", "search-history"]), JSON.stringify(ids));
+    const player = m.capabilities.find((c: any) => c.id === "player");
+    check("16 capability anchor is a document pointer", player?.anchor === "docs/project/capabilities.md#capability-player", player?.anchor);
+    check("16 shared capability once, with all declared surfaces", player?.surfaceScope === "all" && JSON.stringify(player?.surfaces) === JSON.stringify(["tizen", "web"]), JSON.stringify(player));
+    check("16 surface-specific root on a shared capability",
+      JSON.stringify(player?.sourceRoots) === JSON.stringify([{ path: "src/features/player/", surface: null }, { path: "src/tv/player/", surface: "tizen" }]), JSON.stringify(player?.sourceRoots));
+    const search = m.capabilities.find((c: any) => c.id === "search");
+    check("16 capability present on one surface only", search?.surfaceScope === "subset" && JSON.stringify(search?.surfaces) === JSON.stringify(["web"]), JSON.stringify(search));
+    const epg = m.capabilities.find((c: any) => c.id === "epg");
+    check("16 components are references into components.md, not copies",
+      JSON.stringify(epg?.components) === JSON.stringify([
+        { name: "ChannelTile", anchor: "docs/project/components.md#reusable-ui-components" },
+        { name: "EpgScreen", anchor: "docs/project/components.md#screens" },
+      ]), JSON.stringify(epg?.components));
+    const channels = m.capabilities.find((c: any) => c.id === "channels");
+    check("16 data dependencies reference integrations.md", JSON.stringify(channels?.dataDependencies) === JSON.stringify([{ name: "Catalog API", anchor: "docs/project/integrations.md#backend-services-apis" }]), JSON.stringify(channels?.dataDependencies));
+    check("16 grounded fields carried as evidence refs", JSON.stringify(epg?.routes) === JSON.stringify(["src/features/epg/EpgScreen.tsx::navigate(\"Player\")"]) && JSON.stringify(epg?.stateOwnership) === JSON.stringify(["src/store/guideStore.ts::useGuideStore"]), JSON.stringify(epg));
+
+    const rels = m.capabilityRelationships;
+    check("16 relationships indexed, sorted by id",
+      JSON.stringify(rels?.map((r: any) => r.id)) === JSON.stringify(["channels:related_to:search", "channels:shares_component_with:epg", "channels:shares_state_with:epg", "epg:navigates_to:player"]),
+      JSON.stringify(rels?.map((r: any) => r.id)));
+    const nav = rels?.find((r: any) => r.type === "navigates_to");
+    check("16 relationship carries kind, evidence and anchor",
+      nav?.evidenceKind === "navigation-route" && nav?.anchor === "docs/project/capabilities.md#relationships" && nav?.evidence?.length === 1, JSON.stringify(nav));
+    check("16 first-degree relationships listed on each capability",
+      JSON.stringify(epg?.relationships) === JSON.stringify(["channels:shares_component_with:epg", "channels:shares_state_with:epg", "epg:navigates_to:player"]), JSON.stringify(epg?.relationships));
+    check("16 no relationship from naming similarity", !rels.some((r: any) => r.from.startsWith("search") && r.to.startsWith("search")), JSON.stringify(rels));
+    check("16 no prose copied into the manifest", !JSON.stringify(m).includes("Arrow-key focus") && !JSON.stringify(m).includes("Shared convention for"));
+    check("16 platformHints still advisory prose list, not surfaces", JSON.stringify(m.stack.platformHints) === JSON.stringify(["React web", "Tizen"]), JSON.stringify(m.stack.platformHints));
+    check("16 validate passes", run(["validate", appRepo]).code === 0);
+    check("16 no device_type routing value is emitted", !JSON.stringify(m).includes("device_type") && !JSON.stringify(m).includes("deviceType"));
+  }
+
+  // --- Scenario 17: every supported family indexes its surfaces separately ---
+  for (const f of FAMILIES) {
+    const dir = join(root, `family-${f.name}`);
+    initRepo(dir);
+    writeFamily(dir, f);
+    run(["emit", dir]);
+    const m = JSON.parse(readFileSync(join(dir, ".ono", "repo-knowledge.json"), "utf-8"));
+    check(`17 ${f.name}: surfaces`, JSON.stringify(m.surfaces.map((s: any) => s.id)) === JSON.stringify(f.surfaces.map((s) => s.id)), JSON.stringify(m.surfaces));
+    check(`17 ${f.name}: coverage.surfaces populated`, m.coverage.surfaces === "populated", m.coverage.surfaces);
+    if (f.surfaces.length > 1) {
+      const second = f.surfaces[1].id;
+      check(`17 ${f.name}: override indexed for ${second} only`,
+        JSON.stringify(Object.keys(m.documents.conventions.surfaceAnchors)) === JSON.stringify([second]), JSON.stringify(m.documents.conventions.surfaceAnchors));
+      check(`17 ${f.name}: minimum runtimes not merged`, m.surfaces[0].minimumRuntime !== m.surfaces[1].minimumRuntime || m.surfaces[0].minimumRuntime === null, JSON.stringify(m.surfaces));
+    } else {
+      check(`17 ${f.name}: single surface, no overrides`, JSON.stringify(m.documents.conventions.surfaceAnchors) === "{}");
+    }
+  }
+
+  // --- Scenario 18: an already-inspected repository without the new sections degrades to unknown ---
+  {
+    const legacy = join(root, "legacy-model");
+    initRepo(legacy);
+    write(legacy, "CLAUDE.md", "# CLAUDE.md — Legacy\n\n## Tech Stack\n\n- Platform(s): iOS, tvOS\n\n## Repository Structure\n\ntree\n\n## Key Modules\n\nm\n\n## Entry Points\n\ne\n");
+    write(legacy, "AUDIT.md", AUDIT_MD);
+    write(legacy, "docs/project/patterns.md", PATTERNS_MD);
+    write(legacy, "docs/project/components.md", "# C\n\n## Screens\n\n| Screen | Path | Purpose | Notes |\n|---|---|---|---|\n| `Home` | `a` | b | |\n");
+    const r = run(["emit", legacy]);
+    check("18 legacy: emit exit 0", r.code === 0, r.stderr);
+    const m = JSON.parse(readFileSync(join(legacy, ".ono", "repo-knowledge.json"), "utf-8"));
+    check("18 legacy: coverage.surfaces unknown", m.coverage.surfaces === "unknown");
+    check("18 legacy: coverage.capabilities unknown", m.coverage.capabilities === "unknown");
+    check("18 legacy: no surfaces invented from platformHints", Array.isArray(m.surfaces) && m.surfaces.length === 0 && JSON.stringify(m.stack.platformHints) === JSON.stringify(["iOS", "tvOS"]));
+    check("18 legacy: capabilities/relationships empty", m.capabilities.length === 0 && m.capabilityRelationships.length === 0 && m.sharedCode.length === 0);
+    check("18 legacy: no surfaces pointer; structure shape unchanged", !("surfaces" in m.structure), JSON.stringify(m.structure));
+    check("18 legacy: capabilities document absent", m.documents.capabilities.exists === false && m.fingerprint.artifacts["docs/project/capabilities.md"] === null);
+    check("18 legacy: existing categories unchanged", m.coverage.structure === "populated" && m.coverage.conventions === "populated" && m.coverage.inventory === "populated", JSON.stringify(m.coverage));
+    check("18 legacy: validate passes", run(["validate", legacy]).code === 0);
+  }
+
+  // --- Scenario 19: old manifests without surfaces/capabilities remain valid; malformed new fields do not ---
+  {
+    const p = join(appRepo, ".ono", "repo-knowledge.json");
+    run(["emit", appRepo]);
+    const fresh = JSON.parse(readFileSync(p, "utf-8"));
+    const old = JSON.parse(JSON.stringify(fresh));
+    delete old.surfaces; delete old.sharedCode; delete old.capabilities; delete old.capabilityRelationships;
+    delete old.structure.surfaces; delete old.coverage.surfaces; delete old.coverage.capabilities; delete old.documents.capabilities;
+    for (const d of Object.values(old.documents) as any[]) delete d.surfaceAnchors;
+    delete old.fingerprint.artifacts["docs/project/capabilities.md"];
+    writeFileSync(p, JSON.stringify(old, null, 2) + "\n");
+    check("19 pre-Stage-A manifest validates", run(["validate", appRepo]).code === 0);
+
+    const badSurfaces = { ...fresh, surfaces: "web" };
+    writeFileSync(p, JSON.stringify(badSurfaces, null, 2) + "\n");
+    check("19 surfaces must be an array when present", run(["validate", appRepo]).code === 2);
+
+    const dangling = JSON.parse(JSON.stringify(fresh));
+    dangling.capabilityRelationships.push({ id: "epg:depends_on:ghost", from: "epg", type: "depends_on", to: "ghost", evidenceKind: "import", evidence: ["x"], anchor: "docs/project/capabilities.md#relationships" });
+    writeFileSync(p, JSON.stringify(dangling, null, 2) + "\n");
+    check("19 dangling relationship endpoint rejected", run(["validate", appRepo]).code === 2);
+
+    const vocab = JSON.parse(JSON.stringify(fresh));
+    vocab.capabilityRelationships[0].type = "is_similar_to";
+    writeFileSync(p, JSON.stringify(vocab, null, 2) + "\n");
+    check("19 relationship outside the vocabulary rejected", run(["validate", appRepo]).code === 2);
+
+    const noEvidence = JSON.parse(JSON.stringify(fresh));
+    noEvidence.capabilityRelationships[0].evidence = [];
+    writeFileSync(p, JSON.stringify(noEvidence, null, 2) + "\n");
+    check("19 relationship without evidence rejected", run(["validate", appRepo]).code === 2);
+    run(["emit", appRepo]);
+  }
+
+  // --- Scenario 20: a removed source edge disappears on refresh; remaining ids are stable ---
+  {
+    const p = join(appRepo, ".ono", "repo-knowledge.json");
+    run(["emit", appRepo]);
+    const before = JSON.parse(readFileSync(p, "utf-8"));
+    writeKnowledge(appRepo, {
+      relationships: APP_RELATIONSHIPS.filter((r) => r !== REL_NAVIGATES),
+      capabilities: APP_CAPABILITIES.map((c) => (c.id === "epg" ? { ...c, routes: [] } : c)),
+    });
+    run(["emit", appRepo]);
+    const after = JSON.parse(readFileSync(p, "utf-8"));
+    check("20 removed relationship gone", !after.capabilityRelationships.some((r: any) => r.id === "epg:navigates_to:player"), JSON.stringify(after.capabilityRelationships));
+    check("20 removed from capability first-degree lists", !after.capabilities.find((c: any) => c.id === "epg").relationships.includes("epg:navigates_to:player"));
+    check("20 remaining relationship ids unchanged",
+      JSON.stringify(after.capabilityRelationships.map((r: any) => r.id)) === JSON.stringify(before.capabilityRelationships.map((r: any) => r.id).filter((id: string) => id !== "epg:navigates_to:player")));
+    writeKnowledge(appRepo);
+    run(["emit", appRepo]);
+  }
+
+  // --- Scenario 21: regenerated documents in a different order produce the same index ---
+  {
+    const p = join(appRepo, ".ono", "repo-knowledge.json");
+    run(["emit", appRepo]);
+    const a = JSON.parse(readFileSync(p, "utf-8"));
+    write(appRepo, "docs/project/capabilities.md", capabilitiesMd([...APP_CAPABILITIES].reverse(), [...APP_RELATIONSHIPS].reverse()));
+    run(["emit", appRepo]);
+    const b = JSON.parse(readFileSync(p, "utf-8"));
+    check("21 capabilities identical after reordered refresh", JSON.stringify(a.capabilities) === JSON.stringify(b.capabilities));
+    check("21 relationships identical after reordered refresh", JSON.stringify(a.capabilityRelationships) === JSON.stringify(b.capabilityRelationships));
+    check("21 capability anchors identical after reordered refresh", JSON.stringify([...a.documents.capabilities.anchors].sort()) === JSON.stringify([...b.documents.capabilities.anchors].sort()));
+    writeKnowledge(appRepo);
+    run(["emit", appRepo]);
+  }
+
+  // --- Scenario 22: malformed capability rows are never indexed; coverage is honest ---
+  {
+    const dir = join(root, "malformed-caps");
+    initRepo(dir);
+    writeApp(dir, {
+      relationships: [...APP_RELATIONSHIPS, { from: "search", type: "related_to", to: "search-history", kind: "naming", evidence: ["src/features/search/SearchScreen.tsx"] }],
+    });
+    run(["emit", dir]);
+    const m = JSON.parse(readFileSync(join(dir, ".ono", "repo-knowledge.json"), "utf-8"));
+    check("22 name-only relationship not indexed", m.capabilityRelationships.length === 4, JSON.stringify(m.capabilityRelationships.map((r: any) => r.id)));
+    check("22 coverage.capabilities partial when rows were rejected", m.coverage.capabilities === "partial", m.coverage.capabilities);
+
+    const bad = join(root, "bad-surface");
+    initRepo(bad);
+    writeApp(bad, { surfaces: surfacesSection([{ ...FAMILIES[0].surfaces[0], formFactor: "phone" }]) });
+    run(["emit", bad]);
+    const mb = JSON.parse(readFileSync(join(bad, ".ono", "repo-knowledge.json"), "utf-8"));
+    check("22 invalid form factor -> null + coverage.surfaces partial", mb.surfaces[0].formFactor === null && mb.coverage.surfaces === "partial", JSON.stringify(mb.surfaces));
+  }
+
+  // --- Scenario 23: duplicate headings keep their anchors (Part K) ---
+  {
+    const dir = join(root, "dup-headings");
+    initRepo(dir);
+    write(dir, "docs/project/components.md", "# C\n\n## Screens\n\n### Notes\n\n## Reusable UI Components\n\n### Notes\n");
+    run(["emit", dir]);
+    const m = JSON.parse(readFileSync(join(dir, ".ono", "repo-knowledge.json"), "utf-8"));
+    check("23 duplicate heading suffixed, not dropped",
+      JSON.stringify(m.documents.inventory.anchors) === JSON.stringify(["#screens", "#notes", "#reusable-ui-components", "#notes-1"]), JSON.stringify(m.documents.inventory.anchors));
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

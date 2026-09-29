@@ -1,6 +1,6 @@
 {
   "$schemaVersion": 1,
-  "description": "Extensibility seam for the Ono Project Inspector plugin. The orchestrating agent (agents/project-inspector.md) reads this file to decide which skills exist, in what order, how they connect to hooks, and how they relate to each other. Each skill declares a `type`: `workflow` (a normal registry-driven skill the agent sequences) or `internal` (auto-invoked infrastructure the agent calls automatically at checkpoints — not a workflow stage, no command, no approval gate; marked `autoInvoke: true`). For `workflow` skills, `workflowRole` further distinguishes the linear inspection sequence (`inspection`, the default) from on-demand maintenance tools (`maintenance`). `role`/`pairsWith` express intra-stage relationships such as the breakdown-approve loop. For `workflow`+`inspection` skills, `produces` (the artifacts a stage writes) plus `completion` are the single source of truth for stage completion and resume: `completion: \"artifacts\"` (the default when omitted) means the stage is complete when all of its `produces` exist on disk; `completion: \"topics\"` means completion is derived from the AUDIT.md topic table (no Pending Breakdown and no Draft rows). The deterministic scripts/inspection-state.ts helper reads these fields — it contains no hardcoded stage list. Adding a new linear workflow skill therefore requires only its skills/<id>/SKILL.md folder plus one entry here (with `stage`, `type`, `workflowRole`, `produces`, and optionally `completion`). Adding a skill never requires editing the agent when it fits an existing shape. `sourceBacked: true` marks an inspection stage that reads repository source to produce Project Knowledge; only such a stage may record the knowledge-authoring HEAD (scripts/inspection-state.ts record-knowledge). `knowledgeRefresh` is its policy when /inspect detects source drift on a completed inspection: `default` (always re-run in Update mode) or `when-signaled` (re-run only when a build/dependency/CI manifest changed or a top-level entry appeared/disappeared).",
+  "description": "Extensibility seam for the Ono Project Inspector plugin. The orchestrating agent (agents/project-inspector.md) reads this file to decide which skills exist, in what order, how they connect to hooks, and how they relate to each other. Each skill declares a `type`: `workflow` (a normal registry-driven skill the agent sequences) or `internal` (auto-invoked infrastructure the agent calls automatically at checkpoints — not a workflow stage, no command, no approval gate; marked `autoInvoke: true`). For `workflow` skills, `workflowRole` further distinguishes the linear inspection sequence (`inspection`, the default) from on-demand maintenance tools (`maintenance`). `role`/`pairsWith` express intra-stage relationships such as the breakdown-approve loop. For `workflow`+`inspection` skills, `produces` (the artifacts a stage writes) plus `completion` are the single source of truth for stage completion and resume: `completion: \"artifacts\"` (the default when omitted) means the stage is complete when all of its `produces` exist on disk; `completion: \"topics\"` means completion is derived from the AUDIT.md topic table (no Pending Breakdown and no Draft rows). The deterministic scripts/inspection-state.ts helper reads these fields — it contains no hardcoded stage list. Adding a new linear workflow skill therefore requires only its skills/<id>/SKILL.md folder plus one entry here (with `stage`, `type`, `workflowRole`, `produces`, and optionally `completion`). Adding a skill never requires editing the agent when it fits an existing shape. `sourceBacked: true` marks an inspection stage that reads repository source to produce Project Knowledge; only such a stage may record the knowledge-authoring HEAD (scripts/inspection-state.ts record-knowledge). `knowledgeRefresh` is its policy when /inspect detects source drift on a completed inspection: `default` (always re-run in Update mode) or `when-signaled` (re-run only when a build/dependency/CI/surface-declaring manifest or recorded surface evidence changed, or a top-level entry appeared/disappeared). `knowledgeModel` lists the sections (`path#anchor`) and artifacts (`path`) the current knowledge model requires of a source-backed stage's output: output lacking one predates the model, so the stage (and every downstream source-backed stage) joins the next Refresh Project Knowledge plan, `record-knowledge` refuses to certify it, and — for an artifact listed there — its absence never reopens an otherwise complete stage.",
   "skills": [
     {
       "id": "inspection-state",
@@ -42,6 +42,7 @@
       "completion": "artifacts",
       "sourceBacked": true,
       "knowledgeRefresh": "when-signaled",
+      "knowledgeModel": ["CLAUDE.md#targets-and-surfaces"],
       "requires": [],
       "repeatable": false,
       "requiresApproval": true,
@@ -49,7 +50,7 @@
         "before": "before-inspect",
         "after": "after-project-analysis"
       },
-      "notes": "First stage. Creates the project's baseline AI context and the audit topic index. Must run before any other stage. Its CLAUDE.md template embeds the audit-sync managed-block markers that the maintenance tool later populates."
+      "notes": "First stage. Creates the project's baseline AI context and the audit topic index. Must run before any other stage. Its CLAUDE.md template embeds the audit-sync managed-block markers that the maintenance tool later populates, and the fixed-column Targets and Surfaces section (surfaces discovered from real project/build files, plus shared source roots) that project-docs scopes its knowledge by."
     },
     {
       "id": "project-docs",
@@ -63,18 +64,29 @@
         "docs/project/overview.md",
         "docs/project/components.md",
         "docs/project/patterns.md",
-        "docs/project/integrations.md"
+        "docs/project/integrations.md",
+        "docs/project/capabilities.md"
       ],
       "completion": "artifacts",
       "sourceBacked": true,
       "knowledgeRefresh": "default",
+      "knowledgeModel": [
+        "docs/project/capabilities.md",
+        "docs/project/patterns.md#architecture-and-composition",
+        "docs/project/patterns.md#input-and-interaction",
+        "docs/project/patterns.md#app-lifecycle-and-state",
+        "docs/project/patterns.md#media-and-playback",
+        "docs/project/patterns.md#platform-adapters",
+        "docs/project/patterns.md#accessibility",
+        "docs/project/patterns.md#performance-constraints"
+      ],
       "requires": ["CLAUDE.md"],
       "repeatable": false,
       "requiresApproval": true,
       "hooks": {
         "after": "after-project-docs"
       },
-      "notes": "Second stage. Builds the docs/project/ knowledge base (descriptive: what exists and how things are done) on top of the CLAUDE.md context. Read-only over source. Complements audit-breakdown, which produces evaluative findings rather than a descriptive inventory."
+      "notes": "Second stage. Builds the docs/project/ knowledge base (descriptive: what exists and how things are done) on top of the CLAUDE.md context: shared conventions with per-surface overrides, surface-scoped inventory, and the evidence-backed Feature & Capability Map (capabilities.md) with first-degree capability relationships. Read-only over source. Complements audit-breakdown, which produces evaluative findings rather than a descriptive inventory."
     },
     {
       "id": "audit-breakdown",
