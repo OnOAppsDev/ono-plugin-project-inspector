@@ -36,6 +36,21 @@ import { createHash } from "crypto";
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify";
+import {
+  CAPABILITIES_DOC,
+  EVIDENCE_KINDS,
+  FORM_FACTORS,
+  RELATIONSHIP_TYPES,
+  SURFACES_ANCHOR,
+  headingAnchors,
+  parseCapabilityMap,
+  parseInventory,
+  parseSurfaceModel,
+  surfaceAnchors,
+} from "./knowledge-model";
+
+// Re-exported: the anchor rule lives in knowledge-model.ts so every helper shares it.
+export { headingAnchors };
 
 /** Bump only for a breaking shape change; additive fields keep version 1. */
 export const REPO_KNOWLEDGE_SCHEMA_VERSION = 1;
@@ -50,6 +65,7 @@ const SOURCE_ARTIFACTS = [
   "docs/project/components.md",
   "docs/project/patterns.md",
   "docs/project/integrations.md",
+  "docs/project/capabilities.md",
 ] as const;
 
 /** documents[] key -> repo-relative path. */
@@ -60,6 +76,7 @@ const DOCUMENT_MAP: Array<[string, string]> = [
   ["inventory", "docs/project/components.md"],
   ["conventions", "docs/project/patterns.md"],
   ["integrations", "docs/project/integrations.md"],
+  ["capabilities", "docs/project/capabilities.md"],
 ];
 
 type Coverage = "populated" | "partial" | "unknown";
@@ -68,6 +85,63 @@ interface DocumentRef {
   path: string;
   exists: boolean;
   anchors: string[];
+  /** Per-surface override anchors `{ surfaceId: [{ section, anchor }] }`; `{}` = every surface inherits. */
+  surfaceAnchors: Record<string, Array<{ section: string; anchor: string }>>;
+}
+
+/** One declared surface (CLAUDE.md `## Targets and Surfaces`). Repository facts only. */
+interface SurfaceRef {
+  id: string;
+  platform: string | null;
+  formFactor: string | null;
+  buildSelector: string | null;
+  sourceRoots: string[];
+  sharedWith: string[];
+  packaging: string | null;
+  minimumRuntime: string | null;
+  evidence: string[];
+}
+
+interface SharedCodeRef {
+  root: string;
+  sharedBy: string[];
+  mechanism: string | null;
+  evidence: string[];
+}
+
+/** A named `{name, anchor}` pointer into components.md / integrations.md (anchor null = unresolved). */
+interface NamedRef {
+  name: string;
+  anchor: string | null;
+}
+
+interface CapabilityRef {
+  id: string;
+  name: string | null;
+  anchor: string;
+  surfaceScope: "all" | "subset";
+  surfaces: string[];
+  sourceRoots: Array<{ path: string; surface: string | null }>;
+  entryPoints: string[];
+  components: NamedRef[];
+  services: string[];
+  routes: string[];
+  dataDependencies: NamedRef[];
+  stateOwnership: string[];
+  tests: string[];
+  evidence: string[];
+  /** Ids of every first-degree relationship this capability is an endpoint of. */
+  relationships: string[];
+}
+
+interface CapabilityRelationshipRef {
+  id: string;
+  from: string;
+  type: string;
+  to: string;
+  evidenceKind: string;
+  evidence: string[];
+  anchor: string;
 }
 
 interface AuditTopicRef {
@@ -102,9 +176,20 @@ export interface RepoKnowledge {
     packageManagers: string[];
   };
   commands: { install: string | null; run: string | null; test: string | null; build: string | null };
-  structure: { repositoryTree: string | null; keyModules: string | null; entryPoints: string | null };
+  structure: {
+    repositoryTree: string | null;
+    keyModules: string | null;
+    entryPoints: string | null;
+    /** Additive: pointer to CLAUDE.md's surfaces section; absent when the section is. Not part of structure coverage. */
+    surfaces?: string;
+  };
   documents: Record<string, DocumentRef>;
   auditTopics: AuditTopicRef[];
+  /** Additive (optional in v1): absent in manifests produced before 0.11.0. */
+  surfaces?: SurfaceRef[];
+  sharedCode?: SharedCodeRef[];
+  capabilities?: CapabilityRef[];
+  capabilityRelationships?: CapabilityRelationshipRef[];
 }
 
 function manifestPath(repoRoot: string): string {
@@ -140,28 +225,6 @@ function currentPlugin(): { plugin: string; version: string } {
   } catch {
     return { plugin: "ono-project-inspector", version: "0.0.0" };
   }
-}
-
-/**
- * GitHub-style anchors for every `##`/`###` heading. Re-derived on every emit
- * from live headings so an anchor can never be stale relative to the document.
- */
-export function headingAnchors(md: string): string[] {
-  const out: string[] = [];
-  for (const line of md.split("\n")) {
-    if (!/^#{2,3}\s+/.test(line)) continue;
-    const anchor =
-      "#" +
-      line
-        .replace(/^#{2,3}\s+/, "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, "")
-        .trim()
-        .replace(/\s+/g, "-");
-    if (anchor.length > 1 && !out.includes(anchor)) out.push(anchor);
-  }
-  return out;
 }
 
 /**
@@ -372,25 +435,99 @@ function knowledgeHead(repoRoot: string): string | null {
   return null;
 }
 
+const sorted = (xs: string[]): string[] => Array.from(new Set(xs)).sort();
+
+/**
+ * Surfaces, shared code, capabilities and relationships — an index over the
+ * documents, never a copy: ids, short repository facts, evidence refs and
+ * `path#anchor` pointers only. Arrays are sorted (surfaces keep declaration
+ * order), so a regenerated document that lists the same facts in a different
+ * order indexes identically.
+ */
+function knowledgeModel(claudeMd: string | null, docs: Record<string, string | null>) {
+  const surfaceModel = parseSurfaceModel(claudeMd);
+  const surfaceIds = surfaceModel.surfaces.map((s) => s.id);
+  const surfaces: SurfaceRef[] = surfaceModel.surfaces.map((s) => ({
+    ...s,
+    sourceRoots: sorted(s.sourceRoots),
+    sharedWith: sorted(s.sharedWith),
+    evidence: sorted(s.evidence),
+  }));
+  const sharedCode: SharedCodeRef[] = surfaceModel.sharedCode
+    .map((c) => ({ ...c, sharedBy: sorted(c.sharedBy), evidence: sorted(c.evidence) }))
+    .sort((a, b) => a.root.localeCompare(b.root));
+
+  const map = parseCapabilityMap(docs[CAPABILITIES_DOC]);
+  const pointer = (doc: string, rows: ReturnType<typeof parseInventory>) => (name: string): NamedRef => {
+    const row = rows.find((r) => r.name === name);
+    return { name, anchor: row ? `${doc}${row.anchor}` : null };
+  };
+  const component = pointer("docs/project/components.md", parseInventory(docs["docs/project/components.md"]));
+  const integration = pointer("docs/project/integrations.md", parseInventory(docs["docs/project/integrations.md"]));
+  const byName = (a: NamedRef, b: NamedRef) => a.name.localeCompare(b.name);
+
+  const capabilityRelationships: CapabilityRelationshipRef[] = map.relationships
+    .map((r) => ({ ...r, evidence: sorted(r.evidence), anchor: `${CAPABILITIES_DOC}#relationships` }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const capabilities: CapabilityRef[] = map.capabilities
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      anchor: `${CAPABILITIES_DOC}${c.anchor}`,
+      surfaceScope: c.surfaceScope,
+      surfaces: sorted(c.surfaceScope === "all" ? surfaceIds : c.surfaces),
+      sourceRoots: [...c.sourceRoots].sort((a, b) => a.path.localeCompare(b.path) || String(a.surface).localeCompare(String(b.surface))),
+      entryPoints: sorted(c.entryPoints),
+      components: c.components.map(component).sort(byName),
+      services: sorted(c.services),
+      routes: sorted(c.routes),
+      dataDependencies: c.dataDependencies.map(integration).sort(byName),
+      stateOwnership: sorted(c.stateOwnership),
+      tests: sorted(c.tests),
+      evidence: sorted(c.evidence),
+      relationships: capabilityRelationships.filter((r) => r.from === c.id || r.to === c.id).map((r) => r.id),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const coverage = (present: boolean, count: number, issues: number): Coverage =>
+    !present || count === 0 ? "unknown" : issues > 0 ? "partial" : "populated";
+
+  return {
+    surfaceIds,
+    surfacesPointer: surfaceModel.present ? `CLAUDE.md${SURFACES_ANCHOR}` : null,
+    surfaces,
+    sharedCode,
+    capabilities,
+    capabilityRelationships,
+    surfacesCoverage: coverage(surfaceModel.present, surfaces.length, surfaceModel.issues.length),
+    capabilitiesCoverage: coverage(map.present, capabilities.length, map.issues.length),
+  };
+}
+
 export function buildManifest(repoRoot: string): RepoKnowledge {
   const claudeMd = readIfExists(repoRoot, "CLAUDE.md");
   const auditMd = readIfExists(repoRoot, "AUDIT.md");
+  const bodies: Record<string, string | null> = {};
+  for (const rel of SOURCE_ARTIFACTS) bodies[rel] = readIfExists(repoRoot, rel);
+  const model = knowledgeModel(claudeMd, bodies);
 
   const artifacts: Record<string, string | null> = {};
   for (const rel of SOURCE_ARTIFACTS) {
-    const body = readIfExists(repoRoot, rel);
+    const body = bodies[rel];
     artifacts[rel] = body === null ? null : sha256(body);
   }
 
   const documents: Record<string, DocumentRef> = {};
   for (const [key, rel] of DOCUMENT_MAP) {
-    const body = readIfExists(repoRoot, rel);
+    const body = bodies[rel] ?? null;
+    const indexed = body !== null && rel.startsWith("docs/project/");
     documents[key] = {
       path: rel,
       exists: body !== null,
       // Anchors are only useful for the docs/project knowledge base; CLAUDE.md
       // and AUDIT.md are referenced by fixed section pointers instead.
-      anchors: body !== null && rel.startsWith("docs/project/") ? headingAnchors(body) : [],
+      anchors: indexed ? headingAnchors(body as string) : [],
+      surfaceAnchors: indexed ? surfaceAnchors(body as string, model.surfaceIds) : {},
     };
   }
 
@@ -406,6 +543,8 @@ export function buildManifest(repoRoot: string): RepoKnowledge {
     keyModules: claudeMdAnchors.includes("#key-modules") ? "CLAUDE.md#key-modules" : null,
     entryPoints: claudeMdAnchors.includes("#entry-points") ? "CLAUDE.md#entry-points" : null,
   };
+  // Structure coverage stays defined over the three original pointers.
+  const structureCoverage = coverageForNullable([structure.repositoryTree, structure.keyModules, structure.entryPoints]);
 
   const coverage: Record<string, Coverage> = {
     stack: coverageForList([
@@ -416,11 +555,13 @@ export function buildManifest(repoRoot: string): RepoKnowledge {
       stack.packageManagers,
     ]),
     commands: coverageForNullable([commands.install, commands.run, commands.test, commands.build]),
-    structure: coverageForNullable([structure.repositoryTree, structure.keyModules, structure.entryPoints]),
+    structure: structureCoverage,
     inventory: documents.inventory.exists && documents.inventory.anchors.length > 0 ? "populated" : "unknown",
     conventions: documents.conventions.exists && documents.conventions.anchors.length > 0 ? "populated" : "unknown",
     integrations: documents.integrations.exists && documents.integrations.anchors.length > 0 ? "populated" : "unknown",
     auditTopics: auditTopics.length > 0 ? "populated" : "unknown",
+    surfaces: model.surfacesCoverage,
+    capabilities: model.capabilitiesCoverage,
   };
 
   return {
@@ -431,9 +572,15 @@ export function buildManifest(repoRoot: string): RepoKnowledge {
     coverage,
     stack,
     commands,
-    structure,
+    // The pointer is added only when the section exists, so a repository without
+    // it keeps a byte-identical `structure` object (coverage.surfaces says unknown).
+    structure: model.surfacesPointer ? { ...structure, surfaces: model.surfacesPointer } : structure,
     documents,
     auditTopics,
+    surfaces: model.surfaces,
+    sharedCode: model.sharedCode,
+    capabilities: model.capabilities,
+    capabilityRelationships: model.capabilityRelationships,
   };
 }
 
@@ -454,6 +601,38 @@ export function validateManifest(value: unknown): string[] {
   if (!m.coverage || typeof m.coverage !== "object") errors.push("coverage missing");
   if (!m.documents || typeof m.documents !== "object") errors.push("documents missing");
   if (!Array.isArray(m.auditTopics)) errors.push("auditTopics is not an array");
+
+  // Additive in schema v1: each field may be absent (older producer); present must be well-formed.
+  const optionalArray = (key: keyof RepoKnowledge): any[] | null => {
+    const v = (m as any)[key];
+    if (v === undefined) return null;
+    if (!Array.isArray(v)) {
+      errors.push(`${String(key)} must be an array when present`);
+      return null;
+    }
+    return v;
+  };
+  for (const s of optionalArray("surfaces") ?? []) {
+    if (typeof s?.id !== "string") errors.push("surfaces[].id must be a string");
+    if (s?.formFactor !== null && !(FORM_FACTORS as readonly string[]).includes(s?.formFactor)) errors.push(`surface "${s?.id}" has an invalid formFactor`);
+  }
+  optionalArray("sharedCode");
+  const caps = optionalArray("capabilities");
+  const capIds = new Set((caps ?? []).map((c: any) => c?.id));
+  for (const c of caps ?? []) {
+    if (typeof c?.id !== "string" || typeof c?.anchor !== "string") errors.push("capabilities[] needs a string id and anchor");
+  }
+  for (const r of optionalArray("capabilityRelationships") ?? []) {
+    const label = String(r?.id);
+    if (!(RELATIONSHIP_TYPES as readonly string[]).includes(r?.type)) errors.push(`relationship ${label}: type outside the vocabulary`);
+    if (!(EVIDENCE_KINDS as readonly string[]).includes(r?.evidenceKind)) errors.push(`relationship ${label}: evidenceKind not accepted`);
+    if (!Array.isArray(r?.evidence) || r.evidence.length === 0) errors.push(`relationship ${label}: evidence missing`);
+    if (!capIds.has(r?.from) || !capIds.has(r?.to)) errors.push(`relationship ${label}: endpoint is not a listed capability`);
+  }
+  for (const [key, doc] of Object.entries(m.documents ?? {})) {
+    const sa = (doc as any)?.surfaceAnchors;
+    if (sa !== undefined && (sa === null || typeof sa !== "object" || Array.isArray(sa))) errors.push(`documents.${key}.surfaceAnchors must be an object`);
+  }
   return errors;
 }
 

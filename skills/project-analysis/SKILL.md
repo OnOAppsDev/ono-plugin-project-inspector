@@ -114,6 +114,8 @@ Collect only the information needed to populate the two embedded templates:
 
 - Project identity: README, package/build files, license.
 - Tech stack: languages, frameworks, package managers, platforms.
+- **Targets and surfaces** — discovered from real project/build files, never from the README's marketing claims or from the stack alone: Xcode projects/schemes/`.xcconfig` and project generators (`project.yml`, `Project.swift`), Gradle modules/flavors/build types and each module's `AndroidManifest.xml`, `package.json` scripts and bundler configs, RN/Expo app config, Smart TV app descriptors (e.g. `config.xml`, `appinfo.json`). One surface per independently built/shipped target (a scheme, a module, a flavor, a bundle target). See "Targets and Surfaces rules" below.
+- **Shared vs target-specific source roots** — which folders each surface builds from, and which roots are shared between surfaces and by what mechanism (target membership, a local package/module dependency, conditional compilation, platform file extensions, a shared source folder).
 - Build/run/test commands: scripts, Makefile, CI config, README instructions.
 - Repository structure: top-level tree, key modules, entry points.
 - Configuration: sample env files, config folders, feature flags; variable names only.
@@ -152,7 +154,7 @@ Before writing, check whether `CLAUDE.md` or `AUDIT.md` already exist.
 - Keep every existing `## Audit Topics` row: same topic name, same `Status`, same `File` reference. Never reset a topic to `Pending Breakdown`, never change `Draft` or `Approved`, never rewrite a `File` path, and never delete a row. Keep any `Approved <YYYY-MM-DD>` note `audit-approve` wrote in `Notes` (you may append to `Notes`, not replace it).
 - You may append a **new** topic row (next `#`, `Pending Breakdown`, `Not created yet`) when the source changed enough to warrant one.
 - Copy both `<!-- audit-sync:important-files:... -->` and `<!-- audit-sync:caution-areas:... -->` blocks from the existing `CLAUDE.md` byte-for-byte, markers included. Their content belongs to `audit-sync`; do not reset them to the template placeholder.
-- Refresh everything else — overview, stack, commands, structure, the `repo-knowledge:facts` block, cross-cutting observations — from the current source.
+- Refresh everything else — overview, stack, commands, structure, the `Targets and Surfaces` section, the `repo-knowledge:facts` block, cross-cutting observations — from the current source. A `CLAUDE.md` written before the surfaces model existed has no `## Targets and Surfaces` section: add it.
 
 Never modify source code.
 
@@ -164,7 +166,7 @@ Generate `CLAUDE.md` using the embedded template below.
 
 Rules:
 
-- Target 600–1000 words.
+- Target 600–1100 words (the surfaces table is compact; do not pad it).
 - Write for Claude Code as the reader.
 - Prefer concise bullets and tables.
 - Include practical commands when confidently detected.
@@ -177,7 +179,32 @@ Rules:
   - Write `Unknown` for any value you could not determine confidently. Never guess — `Unknown` is read as "not known" and the consumer derives it itself, whereas a wrong value silently misleads every downstream plugin.
   - Never write a secret, credential, or environment-variable **value** here. Variable names only, consistent with this skill's other constraints.
   - Do not add keys beyond the nine shown in the template.
+- Populate `## Targets and Surfaces` exactly as the "Targets and Surfaces rules" below describe. Its table headers are parsed deterministically: never rename, reorder, or drop a column.
 - Keep `## External Integrations` to a two-to-four-line summary plus the pointer to `docs/project/integrations.md`. The full inventory belongs to `project-docs`; restating it here creates two sources of truth for the same facts that then drift apart.
+
+### Targets and Surfaces rules
+
+A **surface** is one independently built/shipped target of this repository (an app target or scheme, a Gradle app module or flavor, a bundle target, a TV app package). A repository has one or many; a single-surface repository still gets exactly one row.
+
+- **Surface** — a stable lowercase slug you choose from the repository's own naming (`ios`, `tvos`, `android-mobile`, `android-tv`, `web`, `tizen`, `paid-flavor`, …). Unique. Later documents reference surfaces only by this id, so keep it stable across refreshes.
+- **Platform** — the platform as the repository targets it (e.g. `iOS`, `tvOS`, `Android TV`, `React web`, `Samsung Tizen (React)`).
+- **Form factor** — exactly one of `handheld`, `desktop`, `tv`, `wearable`, `other`. This is an Inspector-neutral description of the device class, **not** the Dev Plugin's `device_type` and not a routing decision; never write `mobile`, `phone`, or any other value.
+- **Build selector** — how this surface is selected when building: a scheme, a module/flavor/variant, a script, a bundler mode. Quote literal names in backticks.
+- **Source roots** — the surface's own (target-specific) roots, as backticked repo-relative paths; a directory ends with `/`.
+- **Shared with** — the other surface ids this surface shares code with, or `None`.
+- **Packaging** — the shipped artifact / deployment shape as the repository configures it (IPA, AAB, APK, `.wgt`, `.ipk`, static bundle, SSR server, …).
+- **Minimum OS / runtime** — only as **declared in the repository's build files** (deployment target, `minSdk`, a descriptor's required version). If nothing declares it, write `Not declared`. Never fill it from what you know about the platform.
+- **Evidence** — at least one evidence ref proving the row, in the form `path` or `path::token` (the token must literally occur in that file, e.g. `` `App.xcodeproj/project.pbxproj::TVOS_DEPLOYMENT_TARGET = 17.0` ``). Evidence is repository source/build files — never `CLAUDE.md`, `AUDIT.md`, `docs/project/**`, `audits/**`, or `.ono/**`.
+
+Under `### Shared Code`, list each source root shared by two or more surfaces, which surfaces share it, the mechanism, and evidence for the mechanism. For a single-surface repository replace the whole table with `Not applicable — single surface.`
+
+Never flatten: two surfaces with different build selectors, roots, packaging or minimums are two rows, and a fact true for only one surface is written only on that surface's row. Never invent a surface the build files do not define.
+
+The after-hook runs `scripts/knowledge-evidence.ts verify <TARGET_ROOT> surfaces`, which resolves every source root and evidence ref against the current source; a row that cannot be proven stops the stage.
+
+### Evidence and volatile knowledge
+
+Every persisted fact must answer "where in THIS repository did this come from?". Persist repository facts only (what the repository's code, build files and repository docs say). Do **not** persist volatile platform knowledge — current SDK or OS release notes, OS capabilities, vendor bugs, store policy, recommended practices — even when you know it. If the repository contains a workaround for such an issue, record the workaround, its source location, and the local trigger/condition if visible — not the vendor claim as a universal truth.
 
 ### CLAUDE.md Template
 
@@ -212,6 +239,18 @@ test_command: {{TEST_COMMAND}}
 build_command: {{BUILD_COMMAND}}
 ```
 <!-- repo-knowledge:facts:end -->
+
+## Targets and Surfaces
+
+| Surface | Platform | Form factor | Build selector | Source roots | Shared with | Packaging | Minimum OS / runtime | Evidence |
+|---------|----------|-------------|----------------|--------------|-------------|-----------|----------------------|----------|
+{{SURFACES_TABLE}}
+
+### Shared Code
+
+| Source root | Shared by | Mechanism | Evidence |
+|-------------|-----------|-----------|----------|
+{{SHARED_CODE_ROWS}}
 
 ## Repository Structure
 
@@ -417,6 +456,7 @@ Files intentionally not created:
 
 Summary:
 - Tech stack: <brief>
+- Surfaces: <count> (<surface ids>)
 - Architecture: <one sentence>
 - Audit topics identified: <count>
 - Recommended first breakdown topic: <topic>
@@ -435,6 +475,8 @@ Next: Review CLAUDE.md and AUDIT.md. Then run audit-breakdown on one topic from 
 - Never create feature docs, story docs, Jira tasks, implementation plans, or source-code patches.
 - Never read or reproduce actual secret values from `.env` files; variable names only.
 - Never reproduce credentials, tokens, private keys, or secrets from any file.
+- Never persist a fact without repository evidence, and never persist volatile platform/vendor knowledge (see "Evidence and volatile knowledge").
+- Never map a surface's form factor to a Dev Plugin `device_type` or make any routing decision.
 - Never proceed without explicit developer confirmation after the summary.
 - Never assume the current working directory is the target repository. Write every artifact under the absolute `<TARGET_ROOT>` passed by the orchestrator; never resolve the root from CWD or `git rev-parse --show-toplevel`, and never write to any path containing `.claude/worktrees/`. If the provided root contains that segment, stop and report instead of writing.
 - Never produce long detailed issue lists in `AUDIT.md`.

@@ -15,6 +15,7 @@ import { execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
+import { writeKnowledge, APP_SOURCE } from "./fixtures/knowledge-fixtures";
 
 const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
 const HELPER = join(HERE, "inspection-state.ts");
@@ -82,13 +83,18 @@ const AUDIT_IN_PROGRESS = `# AUDIT.md — Demo
 | 2 | Pending Breakdown | Networking | Medium | Not created yet | later |
 `;
 
+/** Every Inspector artifact, in the current knowledge model (surfaces, generic patterns, capability map). */
 function writeKnowledgeArtifacts(repo: string, audit: string): void {
-  write(repo, "CLAUDE.md", "# CLAUDE.md — Demo\n");
+  writeKnowledge(repo);
   write(repo, "AUDIT.md", audit);
-  for (const f of ["overview", "components", "patterns", "integrations"]) {
-    write(repo, `docs/project/${f}.md`, `# ${f}\n\n## Section\n`);
-  }
   write(repo, "audits/architecture/architecture-audit.md", "# Architecture audit\n");
+}
+
+/** The shapes a 0.10.0 inspection left behind: no surfaces section, no capability map, no generic pattern sections. */
+function writeLegacyModel(repo: string, opts: { keepSurfaces?: boolean } = {}): void {
+  if (!opts.keepSurfaces) write(repo, "CLAUDE.md", "# CLAUDE.md — Demo\n\n## Tech Stack\n\n- Platform(s): Web\n");
+  write(repo, "docs/project/patterns.md", "# patterns\n\n## State Management\n\nRedux.\n");
+  rmSync(join(repo, "docs", "project", "capabilities.md"), { force: true });
 }
 
 /**
@@ -101,6 +107,7 @@ function completedRepo(dir: string): string {
   git(dir, "init", "-q");
   git(dir, "config", "user.email", "test@example.com");
   git(dir, "config", "user.name", "Test");
+  for (const [rel, body] of Object.entries(APP_SOURCE)) write(dir, rel, body);
   write(dir, "src/app.ts", "export const app = 1;\n");
   write(dir, "package.json", "{\"name\":\"demo\"}\n");
   commitAll(dir, "source");
@@ -158,9 +165,9 @@ try {
   // --- T3: Inspector-owned document changes alone -> no source drift ---
   {
     const repo = completedRepo(join(root, "t3"));
-    write(repo, "CLAUDE.md", "# CLAUDE.md — Demo\n\nedited by audit-sync\n");
+    write(repo, "CLAUDE.md", readFileSync(join(repo, "CLAUDE.md"), "utf-8") + "\nedited by audit-sync\n");
     write(repo, "AUDIT.md", AUDIT_ALL_APPROVED + "\n<!-- note -->\n");
-    write(repo, "docs/project/patterns.md", "# patterns\n\n## Changed\n");
+    write(repo, "docs/project/patterns.md", readFileSync(join(repo, "docs/project/patterns.md"), "utf-8") + "\n## Changed\n");
     write(repo, "audits/architecture/architecture-audit.md", "# Architecture audit v2\n");
     write(repo, ".ono/repo-knowledge.json", "{}\n");
     write(repo, "CLAUDE.md.bak", "old\n");
@@ -288,6 +295,124 @@ try {
     check("T8 in progress: stage3Complete false", d1.stage3Complete === false);
     check("T8 in progress: resume breakdown-next", d1.resume?.nextAction === "breakdown-next", JSON.stringify(d1.resume));
     check("T8 in progress: knowledge.status NOT_APPLICABLE", d1.knowledge?.status === "NOT_APPLICABLE", JSON.stringify(d1.knowledge));
+  }
+  // --- T9: an inspection made under the previous knowledge model gets the new sections on the next Refresh ---
+  {
+    const repo = completedRepo(join(root, "t9"));
+    const khBefore = readState(repo).repository.knowledgeHead;
+    writeLegacyModel(repo);
+    commitAll(repo, "0.10.0-era artifacts (Inspector-owned only)");
+    run(["sync", repo]);
+    const d = detect(repo);
+    check("T9 no source drift at all", d.knowledge?.changedSourceCount === 0, JSON.stringify(d.knowledge));
+    check("T9 still REFRESH_RECOMMENDED: knowledge predates the model", d.knowledge?.status === "REFRESH_RECOMMENDED", JSON.stringify(d.knowledge));
+    check("T9 model signals name the missing sections",
+      ["CLAUDE.md#targets-and-surfaces", "docs/project/capabilities.md", "docs/project/patterns.md#platform-adapters"].every((x) => d.knowledge?.refreshPlan?.modelSignals?.some((sig: string) => sig.includes(x))),
+      JSON.stringify(d.knowledge?.refreshPlan));
+    check("T9 plan includes both source-backed stages", JSON.stringify(d.knowledge?.refreshPlan?.stages) === JSON.stringify(["project-analysis", "project-docs"]), JSON.stringify(d.knowledge?.refreshPlan));
+    check("T9 the model gap does not reopen the inspection", d.stage3Complete === true && d.resume?.nextAction === "stage3-complete", JSON.stringify({ s: d.stage3Complete, r: d.resume }));
+    check("T9 project-docs still complete (new artifact is a model gap, not an incomplete stage)", readState(repo).stages["project-docs"].status === "complete");
+
+    const refused = run(["record-knowledge", repo, "project-docs"]);
+    check("T9 record-knowledge refuses a stage that does not satisfy the model", refused.code === 1 && refused.stderr.includes("docs/project/capabilities.md"), refused.stderr);
+    check("T9 refusal leaves knowledgeHead untouched", readState(repo).repository.knowledgeHead === khBefore);
+
+    check("T9 detect + sync never move knowledgeHead for a model gap", readState(repo).repository.knowledgeHead === khBefore);
+    // The refresh regenerates both stages at the current HEAD.
+    const refreshHead = git(repo, "rev-parse", "HEAD");
+    writeKnowledgeArtifacts(repo, AUDIT_ALL_APPROVED);
+    check("T9 analysis re-recorded", run(["record-knowledge", repo, "project-analysis"]).code === 0);
+    check("T9 docs re-recorded", run(["record-knowledge", repo, "project-docs"]).code === 0);
+    commitAll(repo, "refreshed to current model");
+    const after = detect(repo);
+    check("T9 knowledgeHead semantics unchanged: advanced only by record-knowledge, to the regeneration HEAD",
+      readState(repo).repository.knowledgeHead === refreshHead && refreshHead !== khBefore, `${readState(repo).repository.knowledgeHead} vs ${refreshHead}`);
+    check("T9 back to COMPLETE", after.knowledge?.status === "COMPLETE" && (after.knowledge?.refreshPlan?.modelSignals ?? []).length === 0, JSON.stringify(after.knowledge));
+    check("T9 model signals are derived, never persisted", !JSON.stringify(readState(repo)).includes("modelSignals"));
+  }
+
+  // --- T9b: only the docs-backed model is missing -> only project-docs is planned ---
+  {
+    const repo = completedRepo(join(root, "t9b"));
+    writeLegacyModel(repo, { keepSurfaces: true });
+    commitAll(repo, "docs predate the model");
+    const d = detect(repo);
+    check("T9b plan is project-docs only", JSON.stringify(d.knowledge?.refreshPlan?.stages) === JSON.stringify(["project-docs"]), JSON.stringify(d.knowledge?.refreshPlan));
+    check("T9b no analysis-model signal", !d.knowledge?.refreshPlan?.modelSignals?.some((x: string) => x.includes("CLAUDE.md")), JSON.stringify(d.knowledge?.refreshPlan));
+  }
+
+  // --- T9c: legacy baseline (no knowledgeHead) plus model gap -> BASELINE_UNKNOWN, plan still includes analysis ---
+  {
+    const repo = join(root, "t9c");
+    mkdirSync(repo, { recursive: true });
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "config", "user.name", "Test");
+    write(repo, "src/app.ts", "export const app = 1;\n");
+    writeKnowledgeArtifacts(repo, AUDIT_ALL_APPROVED);
+    writeLegacyModel(repo);
+    run(["sync", repo]);
+    commitAll(repo, "legacy");
+    const d = detect(repo);
+    check("T9c BASELINE_UNKNOWN kept", d.knowledge?.status === "BASELINE_UNKNOWN", JSON.stringify(d.knowledge));
+    check("T9c plan includes analysis for the model gap", JSON.stringify(d.knowledge?.refreshPlan?.stages) === JSON.stringify(["project-analysis", "project-docs"]), JSON.stringify(d.knowledge?.refreshPlan));
+  }
+
+  // --- T10: files that define surfaces signal project-analysis ---
+  {
+    const files: Array<[string, string]> = [
+      ["App.xcodeproj/xcshareddata/xcschemes/AppTV.xcscheme", "<Scheme/>\n"],
+      ["tv/src/main/AndroidManifest.xml", "<manifest/>\n"],
+      ["webos/appinfo.json", "{}\n"],
+      ["tizen/config.xml", "<widget v='2'/>\n"],
+      ["app.json", "{}\n"],
+      ["vite.config.ts", "export default { v: 2 };\n"],
+      ["Config/Base.xcconfig", "TVOS_DEPLOYMENT_TARGET = 17.0\n"],
+      ["project.yml", "targets: {}\n"],
+    ];
+    for (const [rel, body] of files) {
+      const repo = completedRepo(join(root, `t10-${rel.replace(/[^a-z0-9]/gi, "-")}`));
+      write(repo, rel, body);
+      commitAll(repo, `change ${rel}`);
+      const d = detect(repo);
+      check(`T10 ${rel} signals project-analysis`,
+        d.knowledge?.refreshPlan?.stages?.includes("project-analysis") && d.knowledge.refreshPlan.analysisSignals.some((sig: string) => sig.includes(rel)),
+        JSON.stringify(d.knowledge?.refreshPlan));
+    }
+    // A file cited as surface/shared-code evidence in CLAUDE.md is surface-defining too.
+    const repo = completedRepo(join(root, "t10-evidence"));
+    write(repo, "src/features/epg/EpgScreen.tsx", APP_SOURCE["src/features/epg/EpgScreen.tsx"] + "// edit\n");
+    commitAll(repo, "edit a file cited as surface evidence");
+    const d = detect(repo);
+    check("T10 surface evidence change signals project-analysis",
+      d.knowledge?.refreshPlan?.analysisSignals?.some((sig: string) => sig.includes("surface evidence changed: src/features/epg/EpgScreen.tsx")),
+      JSON.stringify(d.knowledge?.refreshPlan));
+    const plain = completedRepo(join(root, "t10-plain"));
+    write(plain, "src/features/search/SearchScreen.tsx", APP_SOURCE["src/features/search/SearchScreen.tsx"] + "// edit\n");
+    commitAll(plain, "edit an ordinary source file");
+    check("T10 ordinary source change keeps the default plan", JSON.stringify(detect(plain).knowledge?.refreshPlan?.stages) === JSON.stringify(["project-docs"]));
+  }
+
+  // --- T11: drift names the capabilities and relationships whose evidence moved ---
+  {
+    const repo = completedRepo(join(root, "t11"));
+    write(repo, "src/features/epg/EpgScreen.tsx", APP_SOURCE["src/features/epg/EpgScreen.tsx"] + "// edit\n");
+    write(repo, "src/services/CatalogService.ts", "export class CatalogService { v = 2 }\n");
+    commitAll(repo, "edit capability sources");
+    const k = detect(repo).knowledge;
+    check("T11 affected capabilities from source roots and service refs",
+      JSON.stringify(k?.affectedCapabilities) === JSON.stringify(["channels", "epg", "search"]), JSON.stringify(k?.affectedCapabilities));
+    check("T11 affected relationships from their evidence",
+      JSON.stringify(k?.affectedRelationships) === JSON.stringify(["channels:shares_component_with:epg", "channels:shares_state_with:epg", "epg:navigates_to:player"]),
+      JSON.stringify(k?.affectedRelationships));
+    check("T11 affected surfaces from source roots / evidence", JSON.stringify(k?.affectedSurfaces) === JSON.stringify(["web"]), JSON.stringify(k?.affectedSurfaces));
+
+    const other = completedRepo(join(root, "t11-none"));
+    write(other, "src/app.ts", "export const app = 9;\n");
+    commitAll(other, "unrelated");
+    const k2 = detect(other).knowledge;
+    check("T11 unrelated change affects no capability", JSON.stringify(k2?.affectedCapabilities) === "[]" && JSON.stringify(k2?.affectedRelationships) === "[]", JSON.stringify(k2));
+    check("T11 affected lists are derived, never persisted", !JSON.stringify(readState(other)).includes("affectedCapabilities"));
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

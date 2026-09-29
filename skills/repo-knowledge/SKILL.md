@@ -25,9 +25,11 @@ Give downstream Ono plugins one deterministic, versioned, fingerprinted entry po
 
 The approved artifacts remain the source of truth. This manifest is an **index over them**:
 
-- `CLAUDE.md` — stack, commands, structure pointers.
+- `CLAUDE.md` — stack, commands, structure pointers, and the `## Targets and Surfaces` section (→ `surfaces[]`, `sharedCode[]`, `structure.surfaces`).
 - `AUDIT.md` — the audit-topic index (topic, status, file). **Bodies of audit files are never read.**
-- `docs/project/*.md` — pointers plus heading anchors for the inventory, conventions, and integrations knowledge bases.
+- `docs/project/*.md` — pointers plus heading anchors for the inventory, conventions, integrations and capabilities knowledge bases; per-surface override anchors (`documents.<key>.surfaceAnchors`); and, from `docs/project/capabilities.md`, the capability index (`capabilities[]`) and first-degree relationship index (`capabilityRelationships[]`) — ids, evidence refs and `path#anchor` pointers only.
+
+All parsing of the generic knowledge model lives in `scripts/knowledge-model.ts`, shared with the evidence gate and drift detection, so the three never disagree. The manifest indexes what the documents say; proving it against source is `scripts/knowledge-evidence.ts`'s job (run from the source-backed stages' after-hooks), not this skill's — so this skill still reads no source. A row the parser rejects (an unknown relationship type or evidence kind, a dangling endpoint, no evidence) is never indexed, and the category reports `partial`.
 
 Prose is never copied into the manifest. Consumers receive a path and an anchor and read the artifact themselves.
 

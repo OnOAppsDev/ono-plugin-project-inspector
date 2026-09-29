@@ -18,13 +18,13 @@ No command invokes a skill directly by name — every command routes through the
 
 ## What it does
 
-1. Runs `project-analysis` to generate `CLAUDE.md` and a concise `AUDIT.md` topic index.
-2. Runs `project-docs` to build a descriptive `docs/project/` knowledge base (overview, component inventory, patterns, integrations).
+1. Runs `project-analysis` to generate `CLAUDE.md` (including a fixed-column **Targets and Surfaces** section discovered from real project/build files) and a concise `AUDIT.md` topic index.
+2. Runs `project-docs` to build a descriptive `docs/project/` knowledge base: overview, surface-scoped component inventory, patterns (shared conventions plus per-surface overrides, including architecture, input, lifecycle, media, platform adapters, accessibility, and repository-defined performance constraints), integrations, and an evidence-backed **Feature & Capability Map** (`capabilities.md`) with first-degree capability relationships. Every surface, capability and relationship is verified against the current source before it is certified.
 3. Runs the **breakdown → approve loop** over audit topics, one at a time:
    - `audit-breakdown` expands one topic into a `Draft` audit document under `audits/<topic-slug>/` and stops for review.
    - `audit-approve` finalizes the reviewed Draft (`Draft` → `Approved` in `AUDIT.md`) — it is the single owner of that transition — after which the next topic is broken down automatically.
 4. Stops for developer approval between every stage and after every Draft.
-5. Once complete, keeps Project Knowledge current: the HEAD at which source-backed knowledge was generated is recorded, and when later source changes are detected `/inspect` offers **Refresh Project Knowledge** — `project-docs` (plus `project-analysis` when build manifests or top-level structure changed) re-run in Update mode under a guard that preserves every audit status and `CLAUDE.md` managed block. No re-audit.
+5. Once complete, keeps Project Knowledge current: the HEAD at which source-backed knowledge was generated is recorded, and when later source changes are detected `/inspect` offers **Refresh Project Knowledge** — `project-docs` (plus `project-analysis` when build or surface-declaring manifests, recorded surface evidence, or top-level structure changed, or when existing knowledge predates the current knowledge model) re-run in Update mode under a guard that preserves every audit status and `CLAUDE.md` managed block. No re-audit.
 6. Separately, on demand, `audit-sync` (documentation maintenance) folds the HIGH/MEDIUM findings of approved topics into managed blocks inside `CLAUDE.md` and checks the index for drift. It never approves anything and is not part of the linear workflow.
 
 ## Documentation
@@ -52,7 +52,8 @@ commands/inspect-sync.md     /inspect-sync — on-demand documentation-sync main
 skills/                      vendored skills + registry.json (extensibility seam); includes internal inspection-state
 hooks/                       agent-read checkpoint instructions between stages
 scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state and knowledge drift,
-                             .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard) + *.test.ts suites
+                             .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard, generic knowledge-model
+                             parser, source-evidence gate) + *.test.ts suites (fixtures in scripts/fixtures/)
 templates/                   reserved for future skills; unused by current skills by design
 docs/repo-knowledge-contract.md   outbound contract consumed by other Ono plugins
                              (architecture and workflow docs live in ono-plugin-marketplace)

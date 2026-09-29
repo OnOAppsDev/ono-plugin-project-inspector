@@ -42,6 +42,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify";
+import { headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model";
 
 /** Bump when the shape of state.json changes; add a migration in migrateState(). */
 const STATE_SCHEMA_VERSION = 1;
@@ -108,6 +109,12 @@ interface RegistryStage {
   sourceBacked: boolean;
   /** Refresh policy on source drift: always re-run ("default"), or only on analysis signals ("when-signaled"). */
   knowledgeRefresh: "default" | "when-signaled" | null;
+  /**
+   * Current knowledge-model requirements (`path` or `path#anchor`). Output that
+   * lacks one predates the model: that is a refresh signal, never an
+   * incomplete stage, and record-knowledge refuses to certify it.
+   */
+  knowledgeModel: string[];
 }
 
 /**
@@ -130,6 +137,7 @@ function loadInspectionStages(): RegistryStage[] {
         sourceBacked: s.sourceBacked === true,
         knowledgeRefresh:
           s.knowledgeRefresh === "default" || s.knowledgeRefresh === "when-signaled" ? s.knowledgeRefresh : null,
+        knowledgeModel: Array.isArray(s.knowledgeModel) ? s.knowledgeModel.map(String) : [],
       }) as RegistryStage)
       .sort((a, b) => a.stage - b.stage);
   } catch {
@@ -144,10 +152,31 @@ function isStageComplete(stage: RegistryStage, repoRoot: string, counts: Counts)
     return counts.total > 0 && counts.pendingBreakdown === 0 && counts.draft === 0;
   }
   // Artifact stage: complete when all concrete produced paths exist. Templated
-  // paths (containing "<...>") are dynamic and cannot be existence-checked.
+  // paths (containing "<...>") are dynamic and cannot be existence-checked. An
+  // artifact the knowledge model added later (listed in `knowledgeModel`) is a
+  // model gap for an older inspection, not a reason to reopen it.
   const concrete = stage.produces.filter((p) => !p.includes("<"));
   if (concrete.length === 0) return false;
-  return concrete.every((rel) => existsSync(join(repoRoot, rel)));
+  return concrete.filter((rel) => !stage.knowledgeModel.includes(rel)).every((rel) => existsSync(join(repoRoot, rel)));
+}
+
+/**
+ * Knowledge-model requirements a stage's current output does not meet — a
+ * missing artifact or a missing section anchor. Empty = the output is in the
+ * current model. Headings, not prose, are checked, so this is deterministic.
+ */
+export function modelGaps(stage: RegistryStage, repoRoot: string): string[] {
+  const gaps: string[] = [];
+  for (const req of stage.knowledgeModel) {
+    const [rel, anchor] = req.split("#");
+    const p = join(repoRoot, rel);
+    if (!existsSync(p)) {
+      gaps.push(req);
+      continue;
+    }
+    if (anchor && !headingAnchors(readFileSync(p, "utf-8")).includes(`#${anchor}`)) gaps.push(req);
+  }
+  return gaps;
 }
 
 /** In-progress heuristic: partial artifacts on disk, or a topic loop that has started. */
@@ -358,6 +387,11 @@ const ANALYSIS_MANIFEST_BASENAMES = new Set([
   "requirements.txt", "Pipfile", "Gemfile", "pubspec.yaml", "composer.json",
   "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
   ".gitlab-ci.yml", "Jenkinsfile",
+  // Files that declare targets / surfaces / flavors / packaging (generic, per ecosystem):
+  // Xcode project generators, Android app manifests, RN/Expo app config, Smart TV
+  // app descriptors (Tizen config.xml, webOS appinfo.json).
+  "project.yml", "Project.swift", "Workspace.swift", "AndroidManifest.xml",
+  "app.json", "eas.json", "config.xml", "appinfo.json",
 ]);
 
 function isAnalysisManifest(rel: string): boolean {
@@ -365,6 +399,9 @@ function isAnalysisManifest(rel: string): boolean {
   return (
     ANALYSIS_MANIFEST_BASENAMES.has(base) ||
     /\.csproj$/.test(base) ||
+    // Xcode schemes and build-setting files; RN/Expo app config; web bundler targets.
+    /\.(xcscheme|xcconfig)$/.test(base) ||
+    /^(app\.config|vite\.config|webpack\.config|next\.config)\.(js|cjs|mjs|ts)$/.test(base) ||
     rel.startsWith(".github/workflows/") ||
     rel.startsWith(".circleci/")
   );
@@ -392,7 +429,16 @@ interface KnowledgeFreshness {
   changedSourceCount: number;
   /** Sorted; capped at MAX_LISTED_FILES — changedSourceCount is the full count. */
   changedSourceFiles: string[];
-  refreshPlan: { stages: string[]; analysisSignals: string[] };
+  refreshPlan: { stages: string[]; analysisSignals: string[]; modelSignals: string[] };
+  /**
+   * Change-surface attribution over the FULL changed-file list: capabilities,
+   * relationships and surfaces whose recorded source roots / evidence contain
+   * a changed file. Hints for the refresh report and for verify-on-use — never
+   * a verdict, never persisted.
+   */
+  affectedCapabilities: string[];
+  affectedRelationships: string[];
+  affectedSurfaces: string[];
 }
 
 const MAX_LISTED_FILES = 50;
@@ -405,13 +451,58 @@ function refreshStages(
   stages: RegistryStage[],
   analysisSignalled: boolean,
   state: InspectionState,
-  currentHead: string | null
+  currentHead: string | null,
+  opts: { drift: boolean; gapStages: Set<string> }
 ): string[] {
-  return stages
-    .filter((st) => st.sourceBacked)
-    .filter((st) => !currentHead || state.stages[st.id]?.knowledgeHead !== currentHead)
-    .filter((st) => st.knowledgeRefresh === "default" || (st.knowledgeRefresh === "when-signaled" && analysisSignalled))
+  const sourceBacked = stages.filter((st) => st.sourceBacked);
+  // A stage whose output predates the knowledge model re-runs, and so does every
+  // downstream source-backed stage (it consumes that output) — even at the same HEAD.
+  const firstGap = sourceBacked.find((st) => opts.gapStages.has(st.id));
+  return sourceBacked
+    .filter(
+      (st) =>
+        (firstGap !== undefined && st.stage >= firstGap.stage) ||
+        (opts.drift &&
+          (!currentHead || state.stages[st.id]?.knowledgeHead !== currentHead) &&
+          (st.knowledgeRefresh === "default" || (st.knowledgeRefresh === "when-signaled" && analysisSignalled)))
+    )
     .map((st) => st.id);
+}
+
+function readIfPresent(repoRoot: string, rel: string): string | null {
+  const p = join(repoRoot, rel);
+  return existsSync(p) ? readFileSync(p, "utf-8") : null;
+}
+
+/** Which recorded surfaces / capabilities / relationships a set of changed files touches. */
+function attribute(repoRoot: string, changed: string[]) {
+  const surfaceModel = parseSurfaceModel(readIfPresent(repoRoot, "CLAUDE.md"));
+  const map = parseCapabilityMap(readIfPresent(repoRoot, "docs/project/capabilities.md"));
+  const touches = (refs: string[]) => refs.some((ref) => changed.some((rel) => isUnder(rel, parseEvidenceRef(ref).path)));
+
+  const surfaceEvidence = [...surfaceModel.surfaces.flatMap((s) => s.evidence), ...surfaceModel.sharedCode.flatMap((c) => c.evidence)]
+    .map((ref) => parseEvidenceRef(ref).path);
+  const surfaceSignals = changed.filter((rel) => surfaceEvidence.some((p) => isUnder(rel, p))).map((rel) => `surface evidence changed: ${rel}`);
+
+  const affectedSurfaces = new Set<string>();
+  for (const s of surfaceModel.surfaces) if (touches([...s.sourceRoots, ...s.evidence])) affectedSurfaces.add(s.id);
+  for (const c of surfaceModel.sharedCode) if (touches([c.root])) c.sharedBy.forEach((id) => affectedSurfaces.add(id));
+
+  const affectedCapabilities = map.capabilities
+    .filter((c) =>
+      touches([
+        ...c.sourceRoots.map((r) => r.path), ...c.entryPoints, ...c.services, ...c.routes, ...c.stateOwnership,
+        ...c.tests, ...c.evidence, ...c.dataDependencies.filter((d) => d.includes("/")),
+      ]))
+    .map((c) => c.id);
+  const affectedRelationships = map.relationships.filter((r) => touches(r.evidence)).map((r) => r.id);
+
+  return {
+    surfaceSignals,
+    affectedSurfaces: Array.from(affectedSurfaces).sort(),
+    affectedCapabilities: affectedCapabilities.sort(),
+    affectedRelationships: affectedRelationships.sort(),
+  };
 }
 
 /**
@@ -422,18 +513,32 @@ function refreshStages(
 function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, stages: RegistryStage[]): KnowledgeFreshness {
   const knowledgeHead = state.repository?.knowledgeHead ?? null;
   const currentHead = currentGitHead(repoRoot);
-  const base = { knowledgeHead, currentHead, changedSourceCount: 0, changedSourceFiles: [] as string[] };
-  const none = { stages: [] as string[], analysisSignals: [] as string[] };
+  const noAttribution = { affectedCapabilities: [] as string[], affectedRelationships: [] as string[], affectedSurfaces: [] as string[] };
+  const base = { knowledgeHead, currentHead, changedSourceCount: 0, changedSourceFiles: [] as string[], ...noAttribution };
+  const none = { stages: [] as string[], analysisSignals: [] as string[], modelSignals: [] as string[] };
 
   if (!state.inspection?.stage3Complete) {
     return { ...base, status: "NOT_APPLICABLE", reason: "Inspection not complete; knowledge is still being produced.", refreshPlan: none };
   }
-  const unknown = (reason: string): KnowledgeFreshness => ({
-    ...base,
-    status: "BASELINE_UNKNOWN",
-    reason,
-    refreshPlan: { stages: refreshStages(stages, false, state, currentHead), analysisSignals: [] },
+
+  // Knowledge-model gaps: output a source-backed stage produced under an older
+  // model. They join the same Refresh Project Knowledge flow; they never create
+  // a second freshness mechanism and never move knowledgeHead.
+  const gapStages = new Set<string>();
+  const modelSignals: string[] = [];
+  for (const st of stages.filter((x) => x.sourceBacked)) {
+    const gaps = modelGaps(st, repoRoot);
+    if (gaps.length) gapStages.add(st.id);
+    for (const g of gaps) modelSignals.push(`knowledge model: ${st.id} output lacks ${g}`);
+  }
+  const plan = (drift: boolean, analysisSignals: string[]) => ({
+    stages: refreshStages(stages, analysisSignals.length > 0, state, currentHead, { drift, gapStages }),
+    analysisSignals,
+    modelSignals,
   });
+  const modelReason = `Project Knowledge predates the current knowledge model (${modelSignals.length} missing section(s)/artifact(s)).`;
+
+  const unknown = (reason: string): KnowledgeFreshness => ({ ...base, status: "BASELINE_UNKNOWN", reason, refreshPlan: plan(true, []) });
   if (!knowledgeHead) {
     return unknown("No knowledge-authoring HEAD recorded (inspected before knowledgeHead existed). Freshness cannot be established.");
   }
@@ -441,21 +546,22 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
   if (git(repoRoot, ["cat-file", "-e", `${knowledgeHead}^{commit}`]) === null) {
     return unknown(`Recorded knowledgeHead ${knowledgeHead.slice(0, 12)} is not in this repository's history (rewritten or shallow).`);
   }
-  if (knowledgeHead === currentHead) {
-    return { ...base, status: "COMPLETE", reason: "Knowledge was generated at the current HEAD.", refreshPlan: none };
-  }
+  const current = (reason: string): KnowledgeFreshness =>
+    gapStages.size > 0
+      ? { ...base, status: "REFRESH_RECOMMENDED", reason: modelReason, refreshPlan: plan(false, []) }
+      : { ...base, status: "COMPLETE", reason, refreshPlan: none };
+  if (knowledgeHead === currentHead) return current("Knowledge was generated at the current HEAD.");
 
   const diff = git(repoRoot, ["diff", "--name-only", "--no-renames", knowledgeHead, currentHead]);
   if (diff === null) return unknown("git diff between knowledgeHead and HEAD failed.");
   const changed = Array.from(new Set(diff.split("\n").filter((l) => l.length > 0)))
     .filter((rel) => !isInspectorOwned(rel))
     .sort();
-  if (changed.length === 0) {
-    return { ...base, status: "COMPLETE", reason: "Only Inspector-owned artifacts changed since knowledge was generated.", refreshPlan: none };
-  }
+  if (changed.length === 0) return current("Only Inspector-owned artifacts changed since knowledge was generated.");
 
-  // Analysis signals: a build/dependency/CI manifest changed, or a top-level
-  // entry appeared or disappeared (the repository structure CLAUDE.md records).
+  // Analysis signals: a build/dependency/CI/surface-declaring manifest changed, a
+  // file recorded as surface evidence changed, or a top-level entry appeared or
+  // disappeared (the repository structure CLAUDE.md records).
   const topAt = (rev: string): Set<string> =>
     new Set((git(repoRoot, ["ls-tree", "--name-only", rev]) ?? "").split("\n").filter(Boolean));
   const topBefore = topAt(knowledgeHead);
@@ -467,16 +573,21 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
     if (!topBefore.has(top)) signals.add(`top-level entry added: ${top}`);
     else if (!topNow.has(top)) signals.add(`top-level entry removed: ${top}`);
   }
+  const attribution = attribute(repoRoot, changed);
+  for (const sig of attribution.surfaceSignals) signals.add(sig);
   const analysisSignals = Array.from(signals).sort();
 
   return {
     knowledgeHead,
     currentHead,
     status: "REFRESH_RECOMMENDED",
-    reason: `${changed.length} source file(s) changed since knowledge was generated.`,
+    reason: `${changed.length} source file(s) changed since knowledge was generated.` + (gapStages.size ? ` ${modelReason}` : ""),
     changedSourceCount: changed.length,
     changedSourceFiles: changed.slice(0, MAX_LISTED_FILES),
-    refreshPlan: { stages: refreshStages(stages, analysisSignals.length > 0, state, currentHead), analysisSignals },
+    refreshPlan: plan(true, analysisSignals),
+    affectedCapabilities: attribution.affectedCapabilities,
+    affectedRelationships: attribution.affectedRelationships,
+    affectedSurfaces: attribution.affectedSurfaces,
   };
 }
 
@@ -615,6 +726,14 @@ function cmdRecordKnowledge(repoRoot: string, stageId: string): void {
   const missing = stage.produces.filter((p) => !p.includes("<")).filter((rel) => !existsSync(join(repoRoot, rel)));
   if (missing.length) {
     console.error(`Refusing to record knowledge for "${stageId}": missing ${missing.join(", ")}.`);
+    process.exit(1);
+  }
+  // Regenerated knowledge must be in the current knowledge model; otherwise the
+  // next detect would still (correctly) plan this stage, and certifying it now
+  // would make an incomplete refresh look done.
+  const gaps = modelGaps(stage, repoRoot);
+  if (gaps.length) {
+    console.error(`Refusing to record knowledge for "${stageId}": output lacks ${gaps.join(", ")} (current knowledge model).`);
     process.exit(1);
   }
   const head = currentGitHead(repoRoot);
