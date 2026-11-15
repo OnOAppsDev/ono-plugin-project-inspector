@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.1 — 2026-11-15
+
+Documentation fix; no behavior change.
+
+- **`/inspect` refresh triggers.** `commands/inspect.md` now describes the 0.11.0 Refresh Project Knowledge triggers accurately: `REFRESH_RECOMMENDED` also fires when existing knowledge predates the current knowledge model (e.g. no `CLAUDE.md` Targets and Surfaces section or no `docs/project/capabilities.md`), even with no source change; `project-analysis` re-runs on build/dependency/CI or surface-declaring manifest changes, recorded surface-evidence changes, top-level entry changes, or a model gap in its own output (a stage with a model gap re-runs together with every later source-backed stage). It also documents the `BASELINE_UNKNOWN` branch (refresh offered as optional). The text now matches `agents/project-inspector.md` and `scripts/inspection-state.ts`.
+
 ## 0.11.0 — 2026-09-29
 
 Generic Project Architecture, Surfaces & Feature Relationship Knowledge (Stage A, producer side). The Inspector now answers, for every supported project family (iOS, Android, React Native, React/web, tvOS, Android TV, Smart TV, and multi-target repositories), both "how is THIS repository structured and implemented, per surface?" and "how are THIS repository's capabilities related?" — without any platform-specific architecture and without moving SDLC methodology into the Inspector.
