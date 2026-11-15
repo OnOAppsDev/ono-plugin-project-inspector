@@ -53,7 +53,7 @@ Advise the developer to **commit `.ono/state.json`** (like `AUDIT.md`) so inspec
 
 ## The Deterministic Helper
 
-All state logic lives in `scripts/inspection-state.ts` (run with a TypeScript runner, e.g. `bun scripts/inspection-state.ts <command> <repo-root> [args]`). The helper is fully **registry-driven**: it reads `skills/registry.json` for the ordered set of `type: workflow` + `workflowRole: inspection` stages and derives completion from each stage's `produces` and `completion` (`"artifacts"` = all produced paths exist; `"topics"` = every AUDIT.md topic is Approved). It contains no hardcoded stage names, so a new linear workflow skill is tracked automatically once its registry entry exists. Commands:
+All state logic lives in this plugin's `scripts/inspection-state.ts`. Run it with Bun, by absolute plugin path: `bun "${CLAUDE_PLUGIN_ROOT}/scripts/inspection-state.ts" <command> <repo-root> [args]` — `${CLAUDE_PLUGIN_ROOT}` is the plugin's install directory, not the repository. Bun is required (the orchestrator's preflight checks it); never substitute another runtime. The helper is fully **registry-driven**: it reads `skills/registry.json` for the ordered set of `type: workflow` + `workflowRole: inspection` stages and derives completion from each stage's `produces` and `completion` (`"artifacts"` = all produced paths exist; `"topics"` = every AUDIT.md topic is Approved). It contains no hardcoded stage names, so a new linear workflow skill is tracked automatically once its registry entry exists. Commands:
 
 | Command | Purpose |
 |---------|---------|

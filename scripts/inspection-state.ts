@@ -552,7 +552,10 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
       : { ...base, status: "COMPLETE", reason, refreshPlan: none };
   if (knowledgeHead === currentHead) return current("Knowledge was generated at the current HEAD.");
 
-  const diff = git(repoRoot, ["diff", "--name-only", "--no-renames", knowledgeHead, currentHead]);
+  // --relative: for a Project Root below the Git Root, report only files inside
+  // the project, with paths relative to it (matching every recorded path and
+  // `ls-tree`, which is already cwd-relative). A no-op at the Git Root.
+  const diff = git(repoRoot, ["diff", "--relative", "--name-only", "--no-renames", knowledgeHead, currentHead]);
   if (diff === null) return unknown("git diff between knowledgeHead and HEAD failed.");
   const changed = Array.from(new Set(diff.split("\n").filter((l) => l.length > 0)))
     .filter((rel) => !isInspectorOwned(rel))
