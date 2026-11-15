@@ -20,16 +20,38 @@
  */
 
 import { existsSync, readdirSync, realpathSync } from "fs";
+import { execFileSync } from "child_process";
 import { join, sep } from "path";
 
 const MARKER = `${sep}.claude${sep}worktrees${sep}`;
 
+function git(args: string[], cwd: string): string | null {
+  try {
+    return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where a skill that wrote into a Claude agent worktree would have left `rel`.
+ * Worktrees live under the Git Root, and a Project Root below the Git Root
+ * appears inside each worktree at the same relative path, so both locations
+ * are checked: <projectRoot>/.claude/worktrees/<id>/<rel> (pre-0.11.2 layout)
+ * and <gitRoot>/.claude/worktrees/<id>/<projectPath>/<rel>.
+ */
 function leakedInWorktree(repoRoot: string, rel: string): string | null {
-  const wtDir = join(repoRoot, ".claude", "worktrees");
-  if (!existsSync(wtDir)) return null;
-  for (const entry of readdirSync(wtDir)) {
-    const candidate = join(wtDir, entry, rel);
-    if (existsSync(candidate)) return candidate;
+  const bases: Array<[string, string]> = [[repoRoot, ""]];
+  const top = git(["rev-parse", "--show-toplevel"], repoRoot);
+  const prefix = git(["rev-parse", "--show-prefix"], repoRoot);
+  if (top && prefix) bases.push([realpathSync(top), prefix]);
+  for (const [base, sub] of bases) {
+    const wtDir = join(base, ".claude", "worktrees");
+    if (!existsSync(wtDir)) continue;
+    for (const entry of readdirSync(wtDir)) {
+      const candidate = join(wtDir, entry, sub, rel);
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }

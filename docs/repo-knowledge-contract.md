@@ -10,6 +10,8 @@ Consumers: `ono-mobile-dev-plugin` (and future Ono plugins), via their own deter
 
 `<repository-root>/.ono/repo-knowledge.json` — committed to Git, portable, machine-generated.
 
+`<repository-root>` is the inspected **Project Root** (producer 0.11.2+): the project directory the developer selected, which is the Git root for most repositories but may be a subdirectory of it (e.g. `yestvos/YesTVOS/` inside the Git root `yestvos/`). The manifest, `CLAUDE.md`, `AUDIT.md` and `docs/project/` always sit together in that directory, and every path inside the manifest is relative to it. A consumer that resolves only the Git root finds no manifest for a nested project — the normal "absent" case, never an error.
+
 ## Guarantees the producer makes
 
 1. **Derived, never authored.** Built only from `CLAUDE.md`, `AUDIT.md`, and `docs/project/*.md` — artifacts this plugin's workflow already produced and a human already approved. No repository source is read. No audit file body is read.

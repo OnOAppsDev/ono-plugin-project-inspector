@@ -126,11 +126,11 @@ check("C6 project-docs output contract lists five files", /five/.test(docs) && d
 
 // --- C7: after-hooks gate on evidence before certifying knowledge ---
 {
-  const a = afterAnalysis.indexOf("knowledge-evidence.ts verify <TARGET_ROOT> surfaces");
-  const aRec = afterAnalysis.indexOf("record-knowledge <TARGET_ROOT> project-analysis");
+  const a = afterAnalysis.indexOf('knowledge-evidence.ts" verify <TARGET_ROOT> surfaces');
+  const aRec = afterAnalysis.indexOf('inspection-state.ts" record-knowledge <TARGET_ROOT> project-analysis');
   check("C7 after-project-analysis verifies surfaces evidence before record-knowledge", a > 0 && aRec > a);
-  const d = afterDocs.indexOf("knowledge-evidence.ts verify <TARGET_ROOT> docs");
-  const dRec = afterDocs.indexOf("record-knowledge <TARGET_ROOT> project-docs");
+  const d = afterDocs.indexOf('knowledge-evidence.ts" verify <TARGET_ROOT> docs');
+  const dRec = afterDocs.indexOf('inspection-state.ts" record-knowledge <TARGET_ROOT> project-docs');
   check("C7 after-project-docs verifies docs evidence before record-knowledge", d > 0 && dRec > d);
   check("C7 after-project-docs verifies capabilities.md exists", afterDocs.includes("docs/project/capabilities.md"));
 }

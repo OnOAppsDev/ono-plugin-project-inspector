@@ -4,6 +4,17 @@ First plugin in the Ono internal AI Marketplace. Inspects an existing repository
 
 This is not an implementation assistant. It never modifies source code, never writes feature docs, implementation plans, or source-code patches.
 
+## Prerequisites
+
+- **[Bun](https://bun.sh)** on `PATH` — every deterministic helper is a Bun script. Each command checks for it first (`scripts/check-bun.sh`) and, if it is missing, stops before touching any file and prints the install command (`curl -fsSL https://bun.sh/install | bash` on macOS/Linux, `brew install oven-sh/bun/bun`, or `powershell -c "irm bun.sh/install.ps1 | iex"` on Windows). The Inspector never installs Bun and never falls back to another runtime.
+- **Git** — knowledge freshness is tracked against Git history.
+
+## Project Root and Git Root
+
+The Inspector analyzes the **project directory you select**, which may sit below the Git repository root (e.g. `yestvos/YesTVOS/` inside the Git root `yestvos/`). Pass that path to the command — `/ono-project-inspector:inspect path/to/YesTVOS` — and every artifact (`CLAUDE.md`, `AUDIT.md`, `docs/project/`, `audits/`, `.ono/`) is written there; Git operations still use the repository root. A project at the Git root behaves exactly as before.
+
+The Inspector never picks a subproject for you. With no path, it starts from the current directory and asks when that is ambiguous — several projects under the Git root, a nested project not explicitly selected, or a nested project selected while an inspection already exists at the Git root (it never migrates or duplicates existing artifacts without your confirmation).
+
 ## Commands
 
 | Command | Responsibility |
@@ -43,7 +54,7 @@ The one document that stays here is [`docs/repo-knowledge-contract.md`](docs/rep
 
 ```
 .claude-plugin/plugin.json   plugin manifest
-agents/project-inspector.md  orchestrator (coordination only, never inspects repos itself; supports 5 invocation modes)
+agents/project-inspector.md  orchestrator (sequences skills and hooks; the skills it invokes run in its context; 5 invocation modes)
 commands/inspect.md          /inspect — full workflow
 commands/inspect-status.md   /inspect-status — read-only progress report
 commands/inspect-topic.md    /inspect-topic — targeted topic breakdown
@@ -53,7 +64,8 @@ skills/                      vendored skills + registry.json (extensibility seam
 hooks/                       agent-read checkpoint instructions between stages
 scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state and knowledge drift,
                              .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard, generic knowledge-model
-                             parser, source-evidence gate) + *.test.ts suites (fixtures in scripts/fixtures/)
+                             parser, source-evidence gate, Project/Git Root resolver, Bun preflight) + *.test.ts suites
+                             (fixtures in scripts/fixtures/); live-smoke.ts is the on-demand real Claude Code smoke test
 templates/                   reserved for future skills; unused by current skills by design
 docs/repo-knowledge-contract.md   outbound contract consumed by other Ono plugins
                              (architecture and workflow docs live in ono-plugin-marketplace)

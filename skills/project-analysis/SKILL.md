@@ -130,7 +130,7 @@ Do not write detailed findings during this step. Convert observations into audit
 ## Step 4: Shell Execution Rules
 
 Repository inspection must be strictly read-only. Follow
-[`docs/shell-execution-rules.md`](../../docs/shell-execution-rules.md) in full: the allowed
+[`docs/shell-execution-rules.md`](../../docs/shell-execution-rules.md) (read it at `${CLAUDE_PLUGIN_ROOT}/docs/shell-execution-rules.md` — a plugin file, not a repository file) in full: the allowed
 command list, the command-shape rules, and the forbidden list live there and are not
 restated here.
 
