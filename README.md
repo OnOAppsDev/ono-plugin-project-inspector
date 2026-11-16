@@ -15,6 +15,14 @@ The Inspector analyzes the **project directory you select**, which may sit below
 
 The Inspector never picks a subproject for you. With no path, it starts from the current directory and asks when that is ambiguous — several projects under the Git root, a nested project not explicitly selected, or a nested project selected while an inspection already exists at the Git root (it never migrates or duplicates existing artifacts without your confirmation).
 
+## Protected branches
+
+Inspection results are never written to `main`, `master`, or a detached HEAD. The Inspector may read and analyze the repository on any branch, but before its first write it asks **once** to create a local working branch from your current checkout — suggested `chore/project-inspection` (or the first free `chore/project-inspection-2`, `-3`, …), or any valid name you give — switches to it, verifies HEAD is still the same commit, and leaves you on it. In `/inspect` that question is folded into the start/continue menu, so it adds no extra prompt; `/inspect-status` and "leave everything unchanged" never create a branch. On an ordinary working branch nothing is asked and nothing changes.
+
+Your staged, unstaged, and untracked changes are carried over untouched (no stash, reset, restore, or clean). An existing branch is never reused, reset, or deleted. Only local Git is used — nothing is fetched, pulled, committed, pushed, or merged, and no pull request is opened, so it works the same with any Git host. The results are uncommitted changes on the working branch: review, commit, and push them yourself.
+
+The protection is mechanical, not just an instruction: every helper that writes Inspector output (`inspection-state` except `detect`, `repo-knowledge emit`, `knowledge-refresh-guard`) and `verify-artifacts.ts` refuse with exit 5 on a protected branch before writing anything, and there is no bypass flag. Branch checks and creation live in `scripts/work-branch.ts`.
+
 ## Commands
 
 | Command | Responsibility |
@@ -64,7 +72,8 @@ skills/                      vendored skills + registry.json (extensibility seam
 hooks/                       agent-read checkpoint instructions between stages
 scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state and knowledge drift,
                              .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard, generic knowledge-model
-                             parser, source-evidence gate, Project/Git Root resolver, Bun preflight) + *.test.ts suites
+                             parser, source-evidence gate, Project/Git Root resolver, Bun preflight, protected-branch guard
+                             and working-branch creation) + *.test.ts suites
                              (fixtures in scripts/fixtures/); live-smoke.ts is the on-demand real Claude Code smoke test
 templates/                   reserved for future skills; unused by current skills by design
 docs/repo-knowledge-contract.md   outbound contract consumed by other Ono plugins

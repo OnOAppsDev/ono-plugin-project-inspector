@@ -56,7 +56,7 @@ function write(root: string, rel: string, body: string): void {
 
 function initRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
-  git(dir, "init", "-q");
+  git(dir, "init", "-q", "-b", "inspector/test-work"); // a working branch: writes are refused on main/master (0.11.3)
   git(dir, "config", "user.email", "test@example.com");
   git(dir, "config", "user.name", "Test");
   write(dir, "README.md", "# test\n");

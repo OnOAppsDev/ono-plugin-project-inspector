@@ -18,4 +18,6 @@ This command is also the on-demand way to refresh `<repo>/.ono/repo-knowledge.js
 
 `/inspect-sync` is maintenance, not a knowledge refresh. Re-emitting the manifest updates `fingerprint.gitHead` (emit time) but never advances `fingerprint.knowledgeHead` (the HEAD at which Project Knowledge was actually generated), so it cannot make stale knowledge look current. If source code has changed since the knowledge was generated, run `/inspect` and choose **Refresh Project Knowledge**.
 
+**Protected branches.** Inspection results are never written to `main`, `master`, or a detached HEAD. On one of those, before writing anything, the agent asks once to create a local working branch from your current checkout (suggested: `chore/project-inspection`, or the next free `-2`, `-3`, …; you may give another name), switches to it, and stays there. Your local changes are kept as they are; nothing is fetched, committed, or pushed. On an ordinary working branch nothing is asked.
+
 $ARGUMENTS

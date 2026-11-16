@@ -36,6 +36,7 @@
  *   0 - success (for `detect`, always 0; read its JSON stdout)
  *   1 - usage error or unreadable/repo problem
  *   2 - state file present but invalid/corrupt JSON
+ *   5 - refused: a writing command on main, master or a detached HEAD (scripts/work-branch.ts)
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "fs";
@@ -43,6 +44,7 @@ import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify";
 import { headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model";
+import { assertWritable, guardWrite } from "./work-branch";
 
 /** Bump when the shape of state.json changes; add a migration in migrateState(). */
 const STATE_SCHEMA_VERSION = 1;
@@ -222,6 +224,8 @@ function readState(repoRoot: string): InspectionState | null {
 }
 
 function writeState(repoRoot: string, state: InspectionState): void {
+  // Protected-branch backstop (0.11.3): never write on main, master or a detached HEAD.
+  assertWritable(repoRoot, "inspection-state");
   const dir = stateDir(repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   state.updatedAt = nowIso();
@@ -811,6 +815,10 @@ function main(): void {
     );
     process.exit(1);
   }
+  // Protected-branch backstop (0.11.3): every command except the read-only
+  // `detect` writes state.json, so refuse before the first mutation while the
+  // repository is on main, master or a detached HEAD. No flag bypasses this.
+  if (command !== "detect") guardWrite(repoRoot, `inspection-state ${command}`);
   switch (command) {
     case "detect":
       return cmdDetect(repoRoot);

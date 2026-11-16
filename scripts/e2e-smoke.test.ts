@@ -9,6 +9,12 @@
  * the upgrade of a 0.10.0-shaped inspection. It runs for a project at the Git
  * Root and for a project nested below it.
  *
+ * 0.11.3: the same pipeline starting on `main`, `master` and a detached HEAD
+ * with uncommitted local changes — read-only startup and status, refused writes
+ * before the Working-Branch Gate, branch creation, the full inspection and a
+ * refresh on the working branch — and a check that an ordinary working branch
+ * gets no new branch.
+ *
  * Only the model-authored artifact text is substituted by fixtures (what the
  * skills would write); every gate, state transition and manifest emit is the
  * real code path. The live, model-driven run is covered separately by the
@@ -19,6 +25,7 @@
  */
 
 import { execFileSync } from "child_process";
+import { FIXTURE_BRANCH, git } from "./fixtures/knowledge-fixtures";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -166,7 +173,11 @@ try {
     check(`${L} resolver: Git Root preserved`, res.json?.gitRoot === gitRoot && res.json?.nested === (layout === "nested"));
     const target: string = res.json.targetRoot;
 
+    const wbc = helper(target, "work-branch.ts", "check", target).json;
+    check(`${L} working branch: not protected, gate passes silently`, wbc?.protected === false && wbc?.branch === FIXTURE_BRANCH, JSON.stringify(wbc));
+
     fullInspection(L, gitRoot, target);
+    check(`${L} working branch: no extra branch was created`, git(gitRoot, "for-each-ref", "--format=%(refname:short)", "refs/heads") === FIXTURE_BRANCH);
 
     if (layout === "nested") {
       check(`${L} no Inspector artifacts at the Git Root (no duplicate outputs)`, INSPECTOR_FILES.every((f) => !existsSync(join(gitRoot, f))), INSPECTOR_FILES.filter((f) => existsSync(join(gitRoot, f))).join(","));
@@ -211,6 +222,77 @@ try {
     check(`${L} legacy refresh -> COMPLETE`, d4?.knowledge?.status === "COMPLETE", JSON.stringify(d4?.knowledge));
     const manifest = JSON.parse(readFileSync(join(target, ".ono", "repo-knowledge.json"), "utf-8"));
     check(`${L} manifest valid and capabilities populated after legacy refresh`, helper(target, "repo-knowledge.ts", "validate", target).code === 0 && manifest.coverage?.capabilities === "populated", JSON.stringify(manifest.coverage));
+  }
+
+  // --- 0.11.3: protected starting branches --------------------------------------
+  for (const [start, layout] of [["main", "root"], ["master", "nested"], ["detached", "root"]] as const) {
+    const L = `E2E[${start}/${layout}]`;
+    const gitRoot = join(root, `protected-${start}-${layout}`);
+    initGit(gitRoot, start === "detached" ? "main" : start);
+    const projectDir = layout === "root" ? gitRoot : join(gitRoot, "YesTVOS");
+    for (const [rel, body] of Object.entries(APP_SOURCE)) write(projectDir, rel, body);
+    write(projectDir, "package.json", "{\"name\":\"demo\"}\n");
+    if (layout === "nested") write(gitRoot, "README.md", "# umbrella repository\n");
+    commitAll(gitRoot, "source");
+    const protectedRef = start === "detached" ? null : `refs/heads/${start}`;
+    if (start === "detached") git(gitRoot, "switch", "-q", "--detach");
+    const startHead = git(gitRoot, "rev-parse", "HEAD");
+    // The developer's uncommitted work: an unstaged edit and an untracked note.
+    write(projectDir, "src/app/App.tsx", (APP_SOURCE["src/app/App.tsx"] ?? "") + "\n// work in progress\n");
+    write(projectDir, "NOTES.local.md", "my notes\n");
+    const dirty = git(gitRoot, "status", "--porcelain=v1", "--untracked-files=all");
+    const branches = () => git(gitRoot, "for-each-ref", "--format=%(refname:short)", "refs/heads");
+    const branchesBefore = branches();
+    const nothingWritten = () => INSPECTOR_FILES.every((f) => !existsSync(join(projectDir, f)) && !existsSync(join(gitRoot, f)));
+
+    // Startup (every mode, including status): preflight, resolve, branch check, detect — all read-only.
+    check(`${L} startup: preflight`, preflight(projectDir).code === 0);
+    const res = helper(projectDir, "resolve-repo-root.ts", projectDir);
+    const target: string = res.json?.targetRoot;
+    check(`${L} startup: resolver -> selected project`, res.code === 0 && target === projectDir, res.stdout);
+    const wbc = helper(target, "work-branch.ts", "check", target).json;
+    check(`${L} startup: branch check reports protected`, wbc?.protected === true && wbc?.reason === (start === "detached" ? "detached" : start), JSON.stringify(wbc));
+    check(`${L} startup: suggestion is chore/project-inspection, local changes counted`, wbc?.suggestedName === "chore/project-inspection" && wbc?.dirty?.count === 2, JSON.stringify(wbc?.dirty));
+    check(`${L} startup: detect is read-only and works`, helper(target, "inspection-state.ts", "detect", target).json?.inspected === false);
+    // Status mode / "leave everything unchanged" stop here.
+    check(`${L} status / leave unchanged: nothing written`, nothingWritten());
+    check(`${L} status / leave unchanged: no branch created, HEAD unchanged`, branches() === branchesBefore && git(gitRoot, "rev-parse", "HEAD") === startHead);
+
+    // A writing step attempted before the gate is refused by every helper.
+    for (const [script, args] of [["inspection-state.ts", ["sync", target]], ["inspection-state.ts", ["init", target]], ["repo-knowledge.ts", ["emit", target]], ["knowledge-refresh-guard.ts", ["snapshot", target]]] as const) {
+      check(`${L} before the gate: ${script} ${args[0]} refused (exit 5)`, helper(target, script, ...args).code === 5);
+    }
+    check(`${L} before the gate: still nothing written`, nothingWritten());
+
+    // The Working-Branch Gate, after the developer's single approval.
+    const created = helper(target, "work-branch.ts", "create", target, wbc.suggestedName);
+    check(`${L} gate: branch created`, created.code === 0 && created.json?.branch === "chore/project-inspection", created.stdout + created.stderr);
+    check(`${L} gate: HEAD is the same commit`, git(gitRoot, "rev-parse", "HEAD") === startHead);
+    check(`${L} gate: local changes untouched`, git(gitRoot, "status", "--porcelain=v1", "--untracked-files=all") === dirty);
+    check(`${L} gate: still nothing written by the gate itself`, nothingWritten());
+    // The developer commits their own work-in-progress on the new branch (the
+    // fixture's later commitAll would otherwise sweep it into "source changed").
+    commitAll(gitRoot, "developer's own work in progress");
+
+    fullInspection(L, gitRoot, target);
+    write(target, "src/features/search/SearchScreen.tsx", (APP_SOURCE["src/features/search/SearchScreen.tsx"] ?? "") + "\n// edited\n");
+    commitAll(gitRoot, "edit search");
+    const d1 = helper(target, "inspection-state.ts", "detect", target).json;
+    check(`${L} refresh on the working branch: REFRESH_RECOMMENDED`, d1?.knowledge?.status === "REFRESH_RECOMMENDED", JSON.stringify(d1?.knowledge));
+    refresh(L, gitRoot, target, d1.knowledge.refreshPlan.stages);
+    check(`${L} refresh on the working branch: COMPLETE`, helper(target, "inspection-state.ts", "detect", target).json?.knowledge?.status === "COMPLETE");
+
+    check(`${L} end: still on the working branch`, git(gitRoot, "symbolic-ref", "-q", "--short", "HEAD") === "chore/project-inspection");
+    if (protectedRef) check(`${L} end: ${start} never moved`, git(gitRoot, "rev-parse", protectedRef) === startHead);
+    check(`${L} end: exactly one branch added`, branches().split("\n").sort().join(",") === [...branchesBefore.split("\n").filter(Boolean), "chore/project-inspection"].sort().join(","), branches());
+    check(`${L} end: schemas unchanged`, JSON.parse(readFileSync(join(target, ".ono", "state.json"), "utf-8")).stateSchemaVersion === 1 && JSON.parse(readFileSync(join(target, ".ono", "repo-knowledge.json"), "utf-8")).repoKnowledgeSchemaVersion === 1);
+
+    // Back on the protected branch: writes are refused again and the next suggestion is free.
+    if (protectedRef) {
+      git(gitRoot, "switch", "-q", start);
+      check(`${L} back on ${start}: writes refused again`, helper(target, "inspection-state.ts", "sync", target).code === 5);
+      check(`${L} back on ${start}: next suggestion is chore/project-inspection-2`, helper(target, "work-branch.ts", "check", target).json?.suggestedName === "chore/project-inspection-2");
+    }
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

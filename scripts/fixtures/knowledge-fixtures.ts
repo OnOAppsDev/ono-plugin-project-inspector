@@ -26,9 +26,16 @@ export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 
-export function initGit(dir: string): void {
+/**
+ * Fixture repositories start on an ordinary working branch: since 0.11.3 the
+ * Inspector refuses to write on main, master or a detached HEAD, and `git init`
+ * defaults to master here. Protection tests pass "main"/"master" explicitly.
+ */
+export const FIXTURE_BRANCH = "inspector/test-work";
+
+export function initGit(dir: string, branch: string = FIXTURE_BRANCH): void {
   mkdirSync(dir, { recursive: true });
-  git(dir, "init", "-q");
+  git(dir, "init", "-q", "-b", branch);
   git(dir, "config", "user.email", "test@example.com");
   git(dir, "config", "user.name", "Test");
 }
