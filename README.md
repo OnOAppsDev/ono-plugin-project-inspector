@@ -23,6 +23,8 @@ Your staged, unstaged, and untracked changes are carried over untouched (no stas
 
 The protection is mechanical, not just an instruction: every helper that writes Inspector output (`inspection-state` except `detect`, `repo-knowledge emit`, `knowledge-refresh-guard`) and `verify-artifacts.ts` refuse with exit 5 on a protected branch before writing anything, and there is no bypass flag. Branch checks and creation live in `scripts/work-branch.ts`.
 
+The Inspector's own file edits are guarded the same way. `hooks/hooks.json` registers a `PreToolUse` hook for `Write`, `Edit`, `MultiEdit` and `NotebookEdit` that acts **only** on calls Claude Code labels as coming from the Inspector agent (`agent_type` `ono-project-inspector:project-inspector`). Such a call is denied while the target file's repository is on `main`, `master`, a detached HEAD, or a branch that cannot be determined; once the working branch exists it is allowed. Your own edits in the main session and every other agent's edits are allowed immediately — the hook never inspects their paths or content and never asks anything.
+
 ## Commands
 
 | Command | Responsibility |
@@ -69,7 +71,8 @@ commands/inspect-topic.md    /inspect-topic — targeted topic breakdown
 commands/inspect-approve.md  /inspect-approve — finalize the reviewed Draft, then continue
 commands/inspect-sync.md     /inspect-sync — on-demand documentation-sync maintenance
 skills/                      vendored skills + registry.json (extensibility seam); includes internal inspection-state
-hooks/                       agent-read checkpoint instructions between stages
+hooks/                       agent-read checkpoint instructions between stages (*.md), plus hooks.json:
+                             the Inspector-agent-scoped write guard (scripts/write-guard.sh / .ts)
 scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state and knowledge drift,
                              .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard, generic knowledge-model
                              parser, source-evidence gate, Project/Git Root resolver, Bun preflight, protected-branch guard
