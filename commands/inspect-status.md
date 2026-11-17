@@ -7,6 +7,6 @@ Invoke the `project-inspector` agent in **`status` mode** (see the agent's "Invo
 
 If an argument was provided, treat it as the target repository path. If not, ask for it once — do not guess and do not scan the filesystem to find it.
 
-This command is read-only: it never invokes a skill and never writes anything. It exists so a developer can check what stage the inspection is at, how many audit topics remain, and what to run next, without starting or advancing the workflow.
+This command is read-only: it never invokes a skill and never writes anything — on `main`, `master`, or a detached HEAD it reports that writing commands will first ask to create a local working branch, but it never creates one. It exists so a developer can check what stage the inspection is at, how many audit topics remain, and what to run next, without starting or advancing the workflow.
 
 $ARGUMENTS

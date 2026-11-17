@@ -64,11 +64,13 @@ All state logic lives in this plugin's `scripts/inspection-state.ts`. Run it wit
 | `record-knowledge <repo-root> <stage>` | Record that a `sourceBacked` stage just regenerated Project Knowledge at the current git HEAD. The **only** writer of the knowledge-authoring HEAD. Exits 1 for a non-source-backed stage, missing stage artifacts, or no git HEAD. |
 | `migrate <repo-root>` | Migrate an older `stateSchemaVersion` forward to the current one. |
 
+Every command except `detect` writes `state.json`, so it refuses with **exit 5** — before writing anything — while the repository is on `main`, `master`, or a detached HEAD (`scripts/work-branch.ts`). There is no flag that bypasses this: create a working branch through the agent's Working-Branch Gate first. `detect` stays read-only and works on any branch.
+
 ## When the Agent Invokes This
 
 The agent calls this skill automatically — the developer never asks for it:
 
-1. **At startup** (from `hooks/before-inspect.md`): run `detect`. If `inspected` is false, `init`. If `needsMigration`, `migrate`. If `versionMismatch`, report it to the developer before proceeding. Use the `resume` pointer to decide where `full`/`resume` continues.
+1. **At startup** (from `hooks/before-inspect.md`): run `detect` only — startup writes nothing. If `versionMismatch`, report it to the developer before proceeding. Use the `resume` pointer to decide where `full`/`resume` continues. `migrate` (when `needsMigration`) and the first `init`/`sync` are writes: they run only after the agent's Working-Branch Gate has passed.
 2. **After each inspection stage and each Stage 3 loop step** (project-analysis, project-docs, each audit-breakdown Draft, each audit-approve finalize): run `sync` so completed stages, topic statuses, counts, and the resume pointer stay current.
 3. **In `status` mode** (`/inspect-status`): run `detect` for an instant, accurate snapshot (falling back to reading `AUDIT.md` if no state file exists yet).
 4. **After `audit-sync` maintenance**: run `sync` (the helper refreshes `maintenance.lastSyncAt` on write).

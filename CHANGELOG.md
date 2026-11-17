@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.11.3 — 2026-11-16
+
+Protected-branch workflow. The Inspector may read and analyze any branch, but it never writes inspection results to `main`, `master`, or a detached HEAD. It uses local Git only, so it behaves the same with any Git host.
+
+- **Working-Branch Gate (new).** Before the first write of any writing command (`/inspect` after the developer's choice, `/inspect-topic`, `/inspect-approve`, `/inspect-sync`), a protected branch triggers one approval to create a local working branch from the current checkout. The suggested name is `chore/project-inspection`, then the first free `-2`, `-3`, …; `project-inspection` is used only if a local `chore` branch makes every `chore/…` name impossible. The developer can accept it or give any valid name. The gate creates the branch with `git switch -c`, checks that HEAD, the index and the working tree are unchanged, continues the workflow, and leaves the developer on that branch. In `/inspect` the question is folded into the existing start/continue menu, so no prompt is added. `/inspect-status` and "leave everything unchanged" never create a branch. On an ordinary working branch nothing is asked and nothing changes.
+- **Safety.** Staged, unstaged and untracked changes are carried over untouched: no stash, reset, restore or clean. An existing branch is never reused, switched to, reset, moved or deleted, and custom names are validated with `git check-ref-format`. A name already held by a remote-tracking ref that is known locally counts as taken; no fetch is done. Nothing is fetched, pulled, committed, pushed or merged, and no pull request is opened. If creating or switching the branch fails, the workflow stops with the reason and nothing is written.
+- **Mechanical backstop (new).** These helpers exit **5** on a protected branch before their first mutation, with an actionable message and no bypass flag:
+  - `inspection-state` (every command except `detect`);
+  - `repo-knowledge emit`;
+  - `knowledge-refresh-guard snapshot` / `verify`;
+  - `verify-artifacts`, so no stage can be reported complete there.
+
+  Read-only operations (`detect`, `validate`, `show`, evidence checks, root resolution) keep working on every branch. The guard does not depend on agent instructions, the Dev Plugin, or any other component.
+- **Inspector write guard (new).** `hooks/hooks.json` registers a `PreToolUse` hook for `Write`, `Edit`, `MultiEdit` and `NotebookEdit` (`scripts/write-guard.sh` → `scripts/write-guard.ts`). It protects file edits made by the Inspector agent, including edits by the skills it runs inline. Without it, those edits relied only on the agent following the gate instructions.
+  - **Scope.** It acts only on calls whose `agent_type` metadata is `ono-project-inspector:project-inspector`, the value observed live for this plugin's agent. Main-session calls carry no `agent_type`, so the developer's own edits and every other agent's edits pass immediately: no Bun is started, nothing is printed, and paths and content are never examined.
+  - **Inspector calls.** Allowed on an ordinary working branch or outside any Git repository. Denied on `main`, `master`, a detached HEAD, a branch that cannot be determined, an unresolvable or dangling-symlink target, malformed input, missing Bun, or a guard error. Once a call is identified as the Inspector's, it never fails open.
+  - **How targets are resolved.** Relative paths resolve against the hook's `cwd`. New files are judged by their nearest existing parent folder, and symlinks are followed to where the write actually lands.
+  - **Unidentifiable input** (no `agent_type`, or input in which it cannot be found) is not treated as the Inspector's. Nothing is guessed from paths or content.
+  - **Out of scope.** No shell-command blocker is included.
+- **Live verification** (one isolated `claude -p` run, Claude Code 2.1.325, this checkout loaded via `--plugin-dir`, throwaway repository on `main`):
+  - Claude Code reported `agent_type` `ono-project-inspector:project-inspector` for the subagent, and none for the main session.
+  - The subagent's `Write` and `Edit` on `main` were denied and nothing was written.
+  - After `work-branch.ts create` the same `Write` and `Edit` succeeded, and `main` did not move.
+  - The main session's own `Write` and `Edit` on `main` succeeded.
+- **Startup is read-only again.** `inspection-state migrate` used to run during startup detection. It now runs as the first write of the chosen action, after the gate.
+- **New helper.** `scripts/work-branch.ts` provides `check` (read-only branch state, local-change counts, suggested name, custom-name validation), `assert`, and `create`.
+- **Knowledge schemas unchanged.** `state.json` v1 and `repo-knowledge.json` v1 are the same as before.
+- **Tests.**
+  - New `scripts/work-branch.test.ts` covers:
+    - main, master, detached HEAD and unborn branches; feature branches; non-Git directories;
+    - default, colliding (local, remote-tracking and path-prefix) and custom names;
+    - dirty trees preserved byte for byte;
+    - failed creation;
+    - nested projects and Claude worktrees;
+    - every writing helper invoked directly on each protected state (refused, nothing written, existing output byte-identical);
+    - an unreachable remote that is never contacted, no commits, and unchanged schemas.
+  - `e2e-smoke` adds runs that start on main (root project), master (nested project) and detached HEAD, each with local changes: read-only startup and status, refused writes before the gate, then the gate, the full inspection and a refresh on the working branch. It also checks that working branches get no extra branch.
+  - `agent-contract` checks the gate wording and its order, that no instruction runs a remote or history-changing Git command, and that every writing helper imports the guard.
+  - New `scripts/write-guard.test.ts` runs the real hook command against throwaway repositories. It covers:
+    - developer edits and other agents on protected branches (allowed);
+    - content that quotes the Inspector's `agent_type` (not treated as identification);
+    - Inspector edits on main, master and detached HEAD with all four tools (denied), and on working branches or outside Git (allowed);
+    - the same repository before and after `work-branch.ts create`;
+    - nested projects and new deep paths, and relative paths;
+    - symlinked files and directories in both directions, and dangling symlinks;
+    - missing Bun, a crashing guard, Git unavailable, unreadable repository metadata, and malformed input;
+    - hook registration: `PreToolUse` only, the four tools, no `Bash`, and an `agent_type` equal to `<plugin>:<agent>`.
+  - Test fixtures now start on a working branch, since `git init` defaults to `master` here.
+
 ## 0.11.2 — 2026-11-15
 
 Execution and project-root fixes from a field report. The Inspector agent can now carry out its own workflow end to end, checks for Bun before it starts, and inspects a project that lives below the Git root.

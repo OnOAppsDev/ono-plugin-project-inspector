@@ -24,10 +24,12 @@
  *   1 - usage error, missing repo root, or a .claude/worktrees path
  *   2 - verify called with no snapshot (or an unreadable one)
  *   3 - verify found approved work that the refresh destroyed
+ *   5 - refused: main, master or a detached HEAD (scripts/work-branch.ts); nothing written
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync, rmSync } from "fs";
 import { join, sep } from "path";
+import { assertWritable, guardWrite } from "./work-branch";
 
 const WORKTREE_MARKER = `${sep}.claude${sep}worktrees${sep}`;
 const SNAPSHOT_REL = join(".ono", "knowledge-refresh-snapshot.json");
@@ -120,6 +122,7 @@ export function findViolations(before: Snapshot, repoRoot: string): string[] {
 }
 
 function cmdSnapshot(repoRoot: string): void {
+  assertWritable(repoRoot, "knowledge-refresh-guard snapshot");
   const snap = takeSnapshot(repoRoot);
   const dir = join(repoRoot, ".ono");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -177,6 +180,10 @@ function main(): void {
     );
     process.exit(1);
   }
+  // Protected-branch backstop (0.11.3): `snapshot` writes and `verify` removes
+  // the snapshot file, and both only run inside a refresh that writes Project
+  // Knowledge — refuse them on main, master or a detached HEAD.
+  if (command === "snapshot" || command === "verify") guardWrite(repoRoot, `knowledge-refresh-guard ${command}`);
   switch (command) {
     case "snapshot":
       return cmdSnapshot(repoRoot);

@@ -55,7 +55,7 @@ All logic lives in this plugin's `scripts/repo-knowledge.ts`. Run it with Bun, b
 | `validate <repo-root>` | Structural validation of an existing manifest. Exit 2 if absent or invalid. |
 | `show <repo-root>` | Print the manifest (read-only). |
 
-Always pass the orchestrator's resolved absolute `TARGET_ROOT`. The helper refuses to operate on any path containing `.claude/worktrees/` and exits non-zero.
+Always pass the orchestrator's resolved absolute `TARGET_ROOT`. The helper refuses to operate on any path containing `.claude/worktrees/` and exits non-zero. `emit` also refuses with **exit 5**, before writing anything, while the repository is on `main`, `master`, or a detached HEAD (`scripts/work-branch.ts`); `validate` and `show` are read-only and work on any branch.
 
 ## Coverage and Graceful Degradation
 

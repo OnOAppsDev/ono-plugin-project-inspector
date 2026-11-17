@@ -5,7 +5,7 @@ Consumed by: `agents/project-inspector.md`, at the very start of the workflow, b
 
 This is not a Claude Code `hooks.json` event. It is a plain checklist the orchestrating agent reads and follows as part of its own startup sequence.
 
-All `scripts/…` paths below are this plugin's files: run them as `bun "<PLUGIN_ROOT>/scripts/<name>.ts"` (see the agent's "Plugin Root and Execution"), never relative to the repository or the current working directory. Steps 0–1 run in **every** invocation mode.
+All `scripts/…` paths below are this plugin's files: run them as `bun "<PLUGIN_ROOT>/scripts/<name>.ts"` (see the agent's "Plugin Root and Execution"), never relative to the repository or the current working directory. Steps 0–2 run in **every** invocation mode, and none of them writes anything.
 
 ## Checklist
 
@@ -18,17 +18,18 @@ All `scripts/…` paths below are this plugin's files: run them as `bun "<PLUGIN
      - `confirm-nested` — the selected nested project has no inspection yet, but Inspector artifacts already exist in an ancestor (`ancestorInspections`). Inspecting it creates a second, separate inspection; nothing is migrated. Ask whether to continue with the nested project or with the existing inspection instead.
      When the developer answers, re-run the resolver with the chosen path (absolute, or joined onto `gitRoot`) — adding `--confirm-nested` only if they explicitly confirmed a `confirm-nested` decision for that same path — and use the new result. Never answer a decision on the developer's behalf, never descend into a subproject on your own, and never move, copy, or merge existing Inspector artifacts.
    - Exit 1 (path not found) or exit 3 / `targetIsWorktree: true` (inside `.claude/worktrees/…` with no resolvable main tree): STOP and report; do not run any stage and do not write anything. If `unwrapped: true`, tell the developer the workflow is targeting the main working tree, not the Claude agent worktree it was launched from.
-2. Confirm `TARGET_ROOT` is known and is NOT under `.claude/worktrees/`. If a target path is still needed, ask the developer for it — then resolve it through `resolve-repo-root.ts` before use. Do not guess.
-3. Do not verify the repository by scanning its contents yourself — that is `project-analysis`'s job. Limit any check here to confirming the path was provided, not to inspecting what's inside it.
-4. Check whether `<PLUGIN_ROOT>/skills/registry.json` is present and parses. If it is missing or invalid, stop and report the workflow cannot proceed — this file is required for orchestration.
-5. Note which registry entries are `enabled: false` and mention them once, briefly, in the initial workflow plan so the developer knows they exist but won't run.
-6. **Inspection state (read-only detect — write nothing yet).** Once `TARGET_ROOT` is resolved, invoke the internal `inspection-state` skill (`detect`) **with `TARGET_ROOT`** (`bun "<PLUGIN_ROOT>/scripts/inspection-state.ts" detect <TARGET_ROOT>`), which does not write. Then:
+2. **Branch state (read-only).** Run `bun "<PLUGIN_ROOT>/scripts/work-branch.ts" check <TARGET_ROOT>`. It never creates, switches, or writes anything. Keep its JSON for the rest of the invocation: `protected` (true on `main`, `master`, or a detached HEAD), `branch` / `detached` / `head`, `dirty` (local changes), and `suggestedName` (`chore/project-inspection`, or the first free `chore/project-inspection-<n>` when that name is already taken). When `protected: true`, include in the startup summary that inspection results cannot be written on this branch and that any writing choice will first create a local working branch (the agent's "Working-Branch Gate"). Do not ask about the branch here and never create one in this step — `status` mode and "leave everything unchanged" must never create a branch. When `protected: false` (an ordinary working branch, or not a Git repository) nothing changes and nothing is asked.
+3. Confirm `TARGET_ROOT` is known and is NOT under `.claude/worktrees/`. If a target path is still needed, ask the developer for it — then resolve it through `resolve-repo-root.ts` before use. Do not guess.
+4. Do not verify the repository by scanning its contents yourself — that is `project-analysis`'s job. Limit any check here to confirming the path was provided, not to inspecting what's inside it.
+5. Check whether `<PLUGIN_ROOT>/skills/registry.json` is present and parses. If it is missing or invalid, stop and report the workflow cannot proceed — this file is required for orchestration.
+6. Note which registry entries are `enabled: false` and mention them once, briefly, in the initial workflow plan so the developer knows they exist but won't run.
+7. **Inspection state (read-only detect — write nothing yet).** Once `TARGET_ROOT` is resolved, invoke the internal `inspection-state` skill (`detect`) **with `TARGET_ROOT`** (`bun "<PLUGIN_ROOT>/scripts/inspection-state.ts" detect <TARGET_ROOT>`), which does not write. Then:
    - Do **not** `init` here. State is first written later (via the post-stage `sync`) only once the developer chooses to start or continue in the Smart Startup Decision, so that choosing "leave everything unchanged" leaves the repo untouched.
-   - If it reports `needsMigration: true` for an existing inspection, invoke `inspection-state` (`migrate`) before continuing that inspection.
+   - If it reports `needsMigration: true` for an existing inspection, do **not** migrate here: `migrate` writes `state.json`, so it runs as the first write of the chosen action, right after the agent's Working-Branch Gate has passed, before that inspection continues. Startup stays read-only on every branch.
    - If it reports `versionMismatch: true`, tell the developer the state was last written by a different plugin version (report both versions) before continuing — do not silently proceed.
    - Hand the `detect` result — `inspected`, completed/current stages, counts, and the `resume` pointer — to the agent's Smart Startup Decision, which presents the status and choices rather than re-deriving progress from files. This is what makes resume-after-interruption reliable.
-   `inspection-state` is internal, deterministic, and never writes source files; `detect`/`migrate` are the only pre-flight skill invocations. Always invoke it with `TARGET_ROOT`, never a raw CWD.
-7. Do not ask the developer questions that a downstream skill will ask anyway (e.g. overwrite/update/preserve/version preferences for existing artifacts). Let the skill own its own intake questions.
+   `inspection-state` is internal, deterministic, and never writes source files; `detect` is the only pre-flight skill invocation. Always invoke it with `TARGET_ROOT`, never a raw CWD.
+8. Do not ask the developer questions that a downstream skill will ask anyway (e.g. overwrite/update/preserve/version preferences for existing artifacts). Let the skill own its own intake questions.
 
 ## Why this exists
 

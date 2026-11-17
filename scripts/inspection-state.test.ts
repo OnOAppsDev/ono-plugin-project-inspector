@@ -104,7 +104,7 @@ function writeLegacyModel(repo: string, opts: { keepSurfaces?: boolean } = {}): 
  */
 function completedRepo(dir: string): string {
   mkdirSync(dir, { recursive: true });
-  git(dir, "init", "-q");
+  git(dir, "init", "-q", "-b", "inspector/test-work"); // a working branch: writes are refused on main/master (0.11.3)
   git(dir, "config", "user.email", "test@example.com");
   git(dir, "config", "user.name", "Test");
   for (const [rel, body] of Object.entries(APP_SOURCE)) write(dir, rel, body);
@@ -244,7 +244,7 @@ try {
   {
     const repo = join(root, "t6");
     mkdirSync(repo, { recursive: true });
-    git(repo, "init", "-q");
+    git(repo, "init", "-q", "-b", "inspector/test-work"); // a working branch: writes are refused on main/master (0.11.3)
     git(repo, "config", "user.email", "test@example.com");
     git(repo, "config", "user.name", "Test");
     write(repo, "src/app.ts", "export const app = 1;\n");
@@ -272,7 +272,7 @@ try {
   {
     const fresh = join(root, "t8-fresh");
     mkdirSync(fresh, { recursive: true });
-    git(fresh, "init", "-q");
+    git(fresh, "init", "-q", "-b", "inspector/test-work"); // a working branch: writes are refused on main/master (0.11.3)
     const d0 = detect(fresh);
     check("T8 first run: inspected false", d0.inspected === false, JSON.stringify(d0));
     check("T8 first run: resume run-stage", d0.resume?.nextAction === "run-stage");
@@ -280,7 +280,7 @@ try {
 
     const prog = join(root, "t8-progress");
     mkdirSync(prog, { recursive: true });
-    git(prog, "init", "-q");
+    git(prog, "init", "-q", "-b", "inspector/test-work"); // a working branch: writes are refused on main/master (0.11.3)
     git(prog, "config", "user.email", "test@example.com");
     git(prog, "config", "user.name", "Test");
     write(prog, "src/app.ts", "export const app = 1;\n");
@@ -345,7 +345,7 @@ try {
   {
     const repo = join(root, "t9c");
     mkdirSync(repo, { recursive: true });
-    git(repo, "init", "-q");
+    git(repo, "init", "-q", "-b", "inspector/test-work"); // a working branch: writes are refused on main/master (0.11.3)
     git(repo, "config", "user.email", "test@example.com");
     git(repo, "config", "user.name", "Test");
     write(repo, "src/app.ts", "export const app = 1;\n");

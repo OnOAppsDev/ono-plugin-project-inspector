@@ -1,0 +1,17 @@
+{
+  "description": "Inspector write guard (0.11.3): denies Write/Edit/MultiEdit/NotebookEdit calls made by the project-inspector agent while the target repository is on main, master, a detached HEAD, or a branch that cannot be determined. Calls from the main session and from every other agent are allowed immediately and untouched.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/write-guard.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

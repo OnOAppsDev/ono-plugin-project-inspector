@@ -29,6 +29,7 @@
  *   0 - success
  *   1 - usage error, missing repo root, or a .claude/worktrees path
  *   2 - manifest absent (validate) or present but invalid
+ *   5 - refused: `emit` on main, master or a detached HEAD (scripts/work-branch.ts); nothing written
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "fs";
@@ -36,6 +37,7 @@ import { createHash } from "crypto";
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify";
+import { assertWritable, guardWrite } from "./work-branch";
 import {
   CAPABILITIES_DOC,
   EVIDENCE_KINDS,
@@ -637,6 +639,8 @@ export function validateManifest(value: unknown): string[] {
 }
 
 function writeManifest(repoRoot: string, manifest: RepoKnowledge): void {
+  // Protected-branch backstop (0.11.3): never write on main, master or a detached HEAD.
+  assertWritable(repoRoot, "repo-knowledge emit");
   const dir = join(repoRoot, ".ono");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(manifestPath(repoRoot), JSON.stringify(manifest, null, 2) + "\n", "utf-8");
@@ -714,6 +718,10 @@ function main(): void {
     );
     process.exit(1);
   }
+  // Protected-branch backstop (0.11.3): `emit` writes the manifest — refuse it
+  // before building anything on main, master or a detached HEAD. `validate` and
+  // `show` are read-only and keep working there.
+  if (command === "emit") guardWrite(repoRoot, "repo-knowledge emit");
   switch (command) {
     case "emit":
       return cmdEmit(repoRoot);
