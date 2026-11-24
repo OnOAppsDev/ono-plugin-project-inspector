@@ -35,7 +35,10 @@ const PHASES: Phase[] = [
   {
     name: "Helpers",
     why: "the deterministic code the workflow calls",
-    suites: ["knowledge-model", "inspection-state", "repo-knowledge", "knowledge-evidence", "knowledge-refresh-guard", "resolve-repo-root", "work-branch"],
+    suites: [
+      "knowledge-model", "inspection-state", "repo-knowledge", "knowledge-evidence", "knowledge-refresh-guard", "resolve-repo-root", "work-branch",
+      "git-paths", "freshness-contract", "doc-header", "audit-recheck", "session-cost",
+    ],
   },
   { name: "Safety", why: "the hook that gates every Inspector write", suites: ["write-guard"] },
   { name: "Contracts", why: "instructions and code cannot drift apart", suites: ["agent-contract", "knowledge-templates"] },

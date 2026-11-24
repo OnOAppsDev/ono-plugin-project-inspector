@@ -98,9 +98,12 @@ function normalizeManifest(m: any): any {
   if (n?.fingerprint) n.fingerprint.gitHead = "<commit the manifest was generated at>";
   return n;
 }
+/** Keys 0.13.0 adds to state.json (additive, schema v1); compared separately below. */
+const ADDITIVE_013 = ["knowledge", "documents", "audits"];
 function normalizeState(s: any): any {
   const n = normalize(s);
   if (n?.plugin) n.plugin.version = "<plugin version>";
+  for (const k of ADDITIVE_013) delete n?.[k];
   return n;
 }
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf-8"));
@@ -150,6 +153,8 @@ try {
   const synced = readJson(join(repo, ".ono", "state.json"));
   check("C4 the re-synced state equals the 0.11.3 state (volatile fields aside)", JSON.stringify(normalizeState(synced)) === JSON.stringify(normalizeState(storedState)));
   check("C4 the state now records the current plugin version", synced.plugin.version === CURRENT_VERSION && synced.repository.knowledgeHead === SOURCE_COMMIT);
+  check("C4 the only additions are the additive 0.13.0 keys", Object.keys(synced).filter((k) => !(k in storedState)).every((k) => ADDITIVE_013.includes(k)), Object.keys(synced).join(","));
+  check("C4 the 0.13.0 freshness snapshot describes the 0.11.3 knowledge truthfully", synced.knowledge?.status === "COMPLETE" && synced.knowledge?.knowledgeHead === SOURCE_COMMIT && synced.knowledge?.checkedHead === git(repo, "rev-parse", "HEAD") && synced.knowledge?.changedSourceCount === 0, JSON.stringify(synced.knowledge));
   git(repo, "add", "-A");
   git(repo, "commit", "-q", "-m", "inspector state refreshed by 0.12.0");
   const after = helper(repo, "inspection-state.ts", "detect", repo).json;

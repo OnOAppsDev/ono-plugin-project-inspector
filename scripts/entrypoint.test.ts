@@ -60,6 +60,8 @@ try {
     { script: "update-audit-index.ts", args: [], expect: (r) => r.code === 1 && /Usage: update-audit-index/.test(r.out) },
     { script: "slugify.ts", args: [], expect: (r) => r.code === 0 && /"Architecture" -> "architecture"/.test(r.out) },
     { script: "node-preflight.mjs", args: [], expect: (r) => r.code === 0 && /"supported":true/.test(r.out) },
+    { script: "audit-recheck.ts", args: [], expect: (r) => r.code === 1 && /Usage: audit-recheck\.ts scope/.test(r.out) },
+    { script: "session-cost.ts", args: [], expect: (r) => r.code === 1 && /Usage: session-cost\.ts/.test(r.out) },
     {
       script: "write-guard.ts", args: [],
       stdin: JSON.stringify({ agent_type: INSPECTOR, tool_name: "Write", tool_input: { file_path: join(repo, "CLAUDE.md") } }),
