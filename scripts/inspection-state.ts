@@ -31,6 +31,16 @@
  *                                           current git HEAD (the knowledge-authoring
  *                                           HEAD), then write
  *   migrate <repo-root>                     Migrate an older schema to current, then write
+ *   freshness <repo-root>                   READ-ONLY. Print the knowledge freshness contract
+ *                                           (Guardian), exit 0. Works on every branch.
+ *   record-approval <repo-root> <topic>     After a HUMAN approval (/inspect-approve): record
+ *                                           the HEAD it was approved at, once; then write
+ *   record-recheck <repo-root> <topic> <results.json|->
+ *                                           Record AI re-verification results for the scope
+ *                                           audit-recheck.ts computes; then write
+ *   stamp-docs <repo-root> <rel>...         Write/normalize the generation header of the
+ *                                           given Inspector documents (doc-header.ts), then
+ *                                           write. Run before the manifest is emitted.
  *
  * Exit codes:
  *   0 - success (for `detect`, always 0; read its JSON stdout)
@@ -46,6 +56,8 @@ import { slugify } from "./slugify.ts";
 import { headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model.ts";
 import { assertWritable, guardWrite } from "./work-branch.ts";
 import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
+import { findHeader, insertHeader, isStampable, sha256, shortCommit, stripHeader, todayUtc, type Header } from "./doc-header.ts";
+import { candidateCommit, commitTouches, computeScope, findRow, RecheckError, type TopicRecord } from "./audit-recheck.ts";
 
 /** Bump when the shape of state.json changes; add a migration in migrateState(). */
 const STATE_SCHEMA_VERSION = 1;
@@ -98,6 +110,29 @@ interface InspectionState {
   resume: { nextAction: string; topic: string | null; hint: string };
   maintenance: { lastSyncAt: string | null };
   migrations: { history: Array<{ from: number; to: number; at: string }> };
+  /**
+   * Additive (0.13.0): the knowledge freshness snapshot taken whenever the Inspector
+   * writes this file anyway — never written on its own. Authoritative only while
+   * `checkedHead` equals the current HEAD; consumers prefer `inspection-state.ts
+   * freshness` (read-only, always current). See KnowledgeFreshnessContract.
+   */
+  knowledge?: KnowledgeFreshnessContract;
+  /**
+   * Additive (0.13.0): per Inspector document, the header it carries and the hash of its
+   * body (the document without the header line) when that header was written. Lets
+   * stamp-docs keep the date of an unchanged document. Keyed by repo-relative path.
+   */
+  documents?: Record<string, DocumentRecord>;
+  /**
+   * Additive (0.13.0): per Approved audit topic, keyed by its audit file path. `approval`
+   * is written once, by record-approval after a human approval, and never changed again.
+   * `verification` holds AI re-verification results (record-recheck) — never an approval.
+   */
+  audits?: Record<string, TopicRecord>;
+}
+
+interface DocumentRecord extends Header {
+  bodySha256: string;
 }
 
 type Counts = { pendingBreakdown: number; draft: number; approved: number; total: number };
@@ -230,6 +265,8 @@ function writeState(repoRoot: string, state: InspectionState): void {
   const dir = stateDir(repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   state.updatedAt = nowIso();
+  // 0.13.0: refresh the freshness snapshot as part of this (already happening) write.
+  state.knowledge = freshnessContract(state, repoRoot, loadInspectionStages());
   writeFileSync(statePath(repoRoot), JSON.stringify(state, null, 2) + "\n", "utf-8");
 }
 
@@ -420,6 +457,29 @@ function git(repoRoot: string, args: string[]): string | null {
   }
 }
 
+/**
+ * Path-listing git commands (0.13.0). Git C-quotes non-ASCII and special names in
+ * its default output (`"docs/project/\327\241…md"`), and `core.quotePath=false`
+ * alone still quotes names containing `"`, `\`, tabs or newlines. NUL-delimited
+ * output (`-z`) is never quoted, so each entry is the exact path Git stores —
+ * the identity every later comparison and git call uses. Returns null on failure.
+ */
+export function gitPaths(repoRoot: string, args: string[]): string[] | null {
+  try {
+    const out = execFileSync("git", ["-c", "core.quotePath=false", ...args], { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 256 * 1024 * 1024 });
+    return out.split("\0").filter((p) => p.length > 0);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Unicode-normalized form used ONLY to compare a Git path with a path recorded in
+ * a document (a model may write NFC where Git stores NFD, e.g. names created on
+ * macOS). Never used as an identity: distinct Git paths stay distinct.
+ */
+export const comparablePath = (p: string): string => p.normalize("NFC");
+
 function currentGitHead(repoRoot: string): string | null {
   return git(repoRoot, ["rev-parse", "HEAD"]) || null;
 }
@@ -483,11 +543,13 @@ function readIfPresent(repoRoot: string, rel: string): string | null {
 function attribute(repoRoot: string, changed: string[]) {
   const surfaceModel = parseSurfaceModel(readIfPresent(repoRoot, "CLAUDE.md"));
   const map = parseCapabilityMap(readIfPresent(repoRoot, "docs/project/capabilities.md"));
-  const touches = (refs: string[]) => refs.some((ref) => changed.some((rel) => isUnder(rel, parseEvidenceRef(ref).path)));
+  // Comparison only: each changed path keeps its exact Git identity in the output.
+  const under = (rel: string, root: string) => isUnder(comparablePath(rel), comparablePath(root));
+  const touches = (refs: string[]) => refs.some((ref) => changed.some((rel) => under(rel, parseEvidenceRef(ref).path)));
 
   const surfaceEvidence = [...surfaceModel.surfaces.flatMap((s) => s.evidence), ...surfaceModel.sharedCode.flatMap((c) => c.evidence)]
     .map((ref) => parseEvidenceRef(ref).path);
-  const surfaceSignals = changed.filter((rel) => surfaceEvidence.some((p) => isUnder(rel, p))).map((rel) => `surface evidence changed: ${rel}`);
+  const surfaceSignals = changed.filter((rel) => surfaceEvidence.some((p) => under(rel, p))).map((rel) => `surface evidence changed: ${rel}`);
 
   const affectedSurfaces = new Set<string>();
   for (const s of surfaceModel.surfaces) if (touches([...s.sourceRoots, ...s.evidence])) affectedSurfaces.add(s.id);
@@ -560,9 +622,10 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
   // --relative: for a Project Root below the Git Root, report only files inside
   // the project, with paths relative to it (matching every recorded path and
   // `ls-tree`, which is already cwd-relative). A no-op at the Git Root.
-  const diff = git(repoRoot, ["diff", "--relative", "--name-only", "--no-renames", knowledgeHead, currentHead]);
+  // NUL-delimited, unquoted (gitPaths): Hebrew, spaces, quotes and tabs arrive as the exact stored path.
+  const diff = gitPaths(repoRoot, ["diff", "-z", "--relative", "--name-only", "--no-renames", knowledgeHead, currentHead]);
   if (diff === null) return unknown("git diff between knowledgeHead and HEAD failed.");
-  const changed = Array.from(new Set(diff.split("\n").filter((l) => l.length > 0)))
+  const changed = Array.from(new Set(diff))
     .filter((rel) => !isInspectorOwned(rel))
     .sort();
   if (changed.length === 0) return current("Only Inspector-owned artifacts changed since knowledge was generated.");
@@ -570,10 +633,14 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
   // Analysis signals: a build/dependency/CI/surface-declaring manifest changed, a
   // file recorded as surface evidence changed, or a top-level entry appeared or
   // disappeared (the repository structure CLAUDE.md records).
-  const topAt = (rev: string): Set<string> =>
-    new Set((git(repoRoot, ["ls-tree", "--name-only", rev]) ?? "").split("\n").filter(Boolean));
+  const topAt = (rev: string): Set<string> | null => {
+    const names = gitPaths(repoRoot, ["ls-tree", "-z", "--name-only", rev]);
+    return names === null ? null : new Set(names);
+  };
   const topBefore = topAt(knowledgeHead);
   const topNow = topAt(currentHead);
+  // Evidence that cannot be read is never treated as "nothing changed".
+  if (topBefore === null || topNow === null) return unknown("git ls-tree of knowledgeHead or HEAD failed.");
   const signals = new Set<string>();
   for (const rel of changed) {
     if (isAnalysisManifest(rel)) signals.add(`build/dependency manifest changed: ${rel}`);
@@ -597,6 +664,340 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
     affectedRelationships: attribution.affectedRelationships,
     affectedSurfaces: attribution.affectedSurfaces,
   };
+}
+
+// --- freshness contract (Guardian, 0.13.0) ---
+
+export const FRESHNESS_CONTRACT_VERSION = 1;
+
+/**
+ * The stable, machine-readable freshness result (contractVersion 1).
+ *
+ *   status              COMPLETE            knowledge matches source at checkedHead
+ *                       REFRESH_RECOMMENDED source changed since knowledgeHead (or the
+ *                                           knowledge predates the current model)
+ *                       BASELINE_UNKNOWN    cannot be established: no knowledgeHead,
+ *                                           HEAD unreadable, history rewritten/shallow,
+ *                                           a git command failed, or unreadable state
+ *                       NOT_APPLICABLE      no completed inspection (none, or in progress)
+ *   changedSourceCount  number of changed source files for COMPLETE (0) and
+ *                       REFRESH_RECOMMENDED; null whenever it is not established
+ *   checkedAt           ISO-8601 time this result was computed
+ *   checkedHead         the HEAD the result describes (null if unreadable)
+ *   knowledgeHead       the knowledge-authoring HEAD (null if not recorded)
+ *   reason              human-readable explanation (not for parsing)
+ *
+ * Commit-based: uncommitted source edits are not considered. A stored COMPLETE is
+ * only valid while checkedHead equals the current HEAD.
+ */
+export interface KnowledgeFreshnessContract {
+  contractVersion: number;
+  status: KnowledgeStatus;
+  changedSourceCount: number | null;
+  checkedAt: string;
+  checkedHead: string | null;
+  knowledgeHead: string | null;
+  reason: string;
+}
+
+function freshnessContract(state: InspectionState, repoRoot: string, stages: RegistryStage[]): KnowledgeFreshnessContract {
+  let k: KnowledgeFreshness;
+  try {
+    k = computeKnowledgeFreshness(state, repoRoot, stages);
+  } catch (err) {
+    return {
+      contractVersion: FRESHNESS_CONTRACT_VERSION, status: "BASELINE_UNKNOWN", changedSourceCount: null, checkedAt: nowIso(),
+      checkedHead: currentGitHead(repoRoot), knowledgeHead: state.repository?.knowledgeHead ?? null,
+      reason: `Freshness could not be computed: ${(err as Error).message}`,
+    };
+  }
+  const established = k.status === "COMPLETE" || k.status === "REFRESH_RECOMMENDED";
+  return {
+    contractVersion: FRESHNESS_CONTRACT_VERSION,
+    status: k.status,
+    changedSourceCount: established ? k.changedSourceCount : null,
+    checkedAt: nowIso(),
+    checkedHead: k.currentHead,
+    knowledgeHead: k.knowledgeHead,
+    reason: k.reason,
+  };
+}
+
+/** Read-only: never writes, never refuses on a protected branch, always exits 0 with one JSON object. */
+function cmdFreshness(repoRoot: string): void {
+  const p = statePath(repoRoot);
+  const head = currentGitHead(repoRoot);
+  const base = { contractVersion: FRESHNESS_CONTRACT_VERSION, changedSourceCount: null, checkedAt: nowIso(), checkedHead: head, knowledgeHead: null };
+  let out: KnowledgeFreshnessContract;
+  if (!existsSync(p)) {
+    out = { ...base, status: "NOT_APPLICABLE", reason: "No inspection state (.ono/state.json) in this project." };
+  } else {
+    let state: InspectionState | null = null;
+    try {
+      state = JSON.parse(readFileSync(p, "utf-8")) as InspectionState;
+    } catch {
+      state = null;
+    }
+    out = state && typeof state === "object" && state.inspection
+      ? freshnessContract(state, repoRoot, loadInspectionStages())
+      : { ...base, status: "BASELINE_UNKNOWN", reason: ".ono/state.json is unreadable; freshness cannot be established." };
+  }
+  console.log(JSON.stringify(out, null, 2));
+  process.exit(0);
+}
+
+// --- document headers (0.13.0) ---
+
+interface StampResult { path: string; action: "stamped" | "unchanged" | "restored" | "skipped-no-baseline" | "error"; header?: string; reason?: string }
+
+/** The body of `rel` as committed at HEAD (header stripped), or null if it has no committed version. */
+function committedBody(repoRoot: string, rel: string): string | null {
+  // `HEAD:./<rel>` resolves relative to the current directory, so a nested Project Root works.
+  const out = (() => {
+    try {
+      return execFileSync("git", ["-c", "core.quotePath=false", "show", `HEAD:./${rel}`], { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+  })();
+  return out === null ? null : stripHeader(out);
+}
+
+/** The knowledge baseline a document's content reflects (see doc-header.ts). */
+function knowledgeCommitFor(rel: string, state: InspectionState, stages: RegistryStage[], repoRoot: string): string {
+  if (rel.startsWith("audits/")) return shortCommit(currentGitHead(repoRoot));
+  const producer = stages.find((st) => st.sourceBacked && st.produces.includes(rel));
+  return shortCommit(producer ? state.stages[producer.id]?.knowledgeHead : null);
+}
+
+function cmdStampDocs(repoRoot: string, rels: string[]): void {
+  if (rels.length === 0) {
+    console.error("Usage: inspection-state.ts stamp-docs <repo-root> <relpath>...");
+    process.exit(1);
+  }
+  const stages = loadInspectionStages();
+  const produced = stages.flatMap((st) => st.produces);
+  let state = readState(repoRoot) ?? freshState(null);
+  state = migrateState(state);
+  const version = currentPluginVersion().version;
+  const records: Record<string, DocumentRecord> = { ...(state.documents ?? {}) };
+  const writes: Array<{ path: string; text: string }> = [];
+  const results: StampResult[] = [];
+
+  for (const raw of rels) {
+    const rel = raw.replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!isStampable(rel, produced)) { results.push({ path: rel, action: "error", reason: "not an Inspector-generated document; never stamped" }); continue; }
+    const abs = join(repoRoot, rel);
+    if (!existsSync(abs)) { results.push({ path: rel, action: "error", reason: "file not found" }); continue; }
+    const text = readFileSync(abs, "utf-8");
+    const body = stripHeader(text);
+    const record = records[rel];
+    const inFile = findHeader(text);
+    // Changed in this workflow? Against the recorded body when there is one, otherwise
+    // against the committed version (a new or uncommitted document counts as changed).
+    const changed = record ? record.bodySha256 !== sha256(body) : committedBody(repoRoot, rel) !== body;
+    let header: Header;
+    if (changed) {
+      header = { version, knowledgeCommit: knowledgeCommitFor(rel, state, stages, repoRoot), updated: todayUtc() };
+    } else if (record) {
+      header = { version: record.version, knowledgeCommit: record.knowledgeCommit, updated: record.updated };
+    } else if (inFile) {
+      header = inFile; // unchanged, header already present: keep it as written
+    } else {
+      // Unchanged and never stamped (written by an older version): no backfill, no invented date.
+      results.push({ path: rel, action: "skipped-no-baseline", reason: "unchanged since its last commit and never stamped; headers are added when the document is next regenerated" });
+      continue;
+    }
+    const next = insertHeader(body, header);
+    records[rel] = { ...header, bodySha256: sha256(stripHeader(next)) };
+    const line = `Generated by ono-project-inspector ${header.version} · knowledge at ${header.knowledgeCommit} · updated ${header.updated}`;
+    if (next === text) { results.push({ path: rel, action: "unchanged", header: line }); continue; }
+    writes.push({ path: abs, text: next });
+    results.push({ path: rel, action: changed ? "stamped" : "restored", header: line });
+  }
+
+  const errors = results.filter((r) => r.action === "error");
+  // Nothing to change (every document already carries its correct header): write nothing at
+  // all — neither the documents nor state.json — so a repeated stamp causes no churn.
+  const recordsChanged = JSON.stringify(records) !== JSON.stringify(state.documents ?? {});
+  if (errors.length === 0 && (writes.length > 0 || recordsChanged)) {
+    // All or nothing: refuse on a protected branch before the first document write.
+    assertWritable(repoRoot, "inspection-state stamp-docs");
+    for (const w of writes) writeFileSync(w.path, w.text, "utf-8");
+    state.documents = records;
+    writeState(repoRoot, state);
+  }
+  console.log(JSON.stringify({ ok: errors.length === 0, results }, null, 2));
+  process.exit(errors.length === 0 ? 0 : 1);
+}
+
+// --- audit approval baseline and re-check (0.13.0) ---
+
+const RESULTS = ["still-open", "fixed", "changed"] as const;
+const MAX_EVIDENCE = 600;
+const MAX_HISTORY = 50;
+
+/** Record the HEAD a human approved a topic at. Idempotent; never overwrites an existing approval. */
+function cmdRecordApproval(repoRoot: string, topic: string): void {
+  const row = findRow(repoRoot, topic);
+  if (!row) { console.error(`No AUDIT.md topic or audit file matches "${topic}".`); process.exit(1); }
+  if (row.status !== "Approved") { console.error(`Topic "${row.topic}" is ${row.status}; record-approval runs only after a human approval.`); process.exit(1); }
+  const head = currentGitHead(repoRoot);
+  if (!head) { console.error("Cannot determine git HEAD; the approval baseline is not recorded (never guessed)."); process.exit(1); }
+  let state = readState(repoRoot) ?? freshState(null);
+  state = migrateState(state);
+  state.audits = state.audits ?? {};
+  const existing = state.audits[row.file];
+  if (existing?.approval?.head) {
+    console.log(JSON.stringify({ ok: true, auditFile: row.file, approvalHead: existing.approval.head, note: "approval baseline already recorded; unchanged" }, null, 2));
+    process.exit(0);
+  }
+  // Only a NEW Draft -> Approved transition made through the workflow gets a baseline.
+  // Evidence 1: the Inspector's own last recorded status for this topic is Draft (the sync
+  //   after audit-breakdown records it; the sync after approval has not run yet).
+  // Evidence 2: the committed AUDIT.md does not already show the topic Approved.
+  // A topic approved earlier (recorded or committed as Approved) keeps "baseline unknown":
+  // its approval commit is never inferred. AUDIT.md content alone is never evidence.
+  const recorded = (state.topics ?? []).find((t) => t.file === row.file) ?? (state.topics ?? []).find((t) => t.topic.toLowerCase() === row.topic.toLowerCase());
+  const committedAudit = (() => {
+    try {
+      return execFileSync("git", ["-c", "core.quotePath=false", "show", "HEAD:./AUDIT.md"], { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return null;
+    }
+  })();
+  const committedApproved = committedAudit !== null && committedAudit.split("\n").some((l) => {
+    const c = l.split("|").slice(1, -1).map((x) => x.trim());
+    return c.length >= 6 && c[1] === "Approved" && (c[4] === row.file || c[2].toLowerCase() === row.topic.toLowerCase());
+  });
+  const refuse = (why: string) => {
+    console.error(`Not recorded: ${why} The topic keeps "baseline unknown" — its first re-check is a full one. No approval commit is inferred.`);
+    process.exit(1);
+  };
+  if (!recorded) refuse(`the Inspector never recorded "${row.topic}" as a Draft, so this is not an approval transition it can attest.`);
+  if (recorded!.status !== "Draft") refuse(`the Inspector last recorded "${row.topic}" as ${recorded!.status}, not Draft — it was approved earlier.`);
+  if (committedApproved) refuse(`"${row.topic}" is already Approved in the committed AUDIT.md — it was approved earlier.`);
+  state.audits[row.file] = { ...(existing ?? {}), topic: row.topic, approval: { head, recordedAt: nowIso(), baseline: "recorded" } };
+  writeState(repoRoot, state);
+  console.log(JSON.stringify({ ok: true, auditFile: row.file, approvalHead: head }, null, 2));
+  process.exit(0);
+}
+
+/**
+ * Record re-verification results. The scope is recomputed here and must still describe
+ * HEAD; only its affected findings accept results. verifiedHead advances only when EVERY
+ * affected finding has a result — a partial run records what it has and leaves the
+ * baseline where it was, so the next re-check covers the rest again.
+ */
+function cmdRecordRecheck(repoRoot: string, topic: string, source: string): void {
+  let input: any;
+  try {
+    input = JSON.parse(source === "-" ? readFileSync(0, "utf-8") : readFileSync(source, "utf-8"));
+  } catch (err) {
+    console.error(`Results are not valid JSON: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  let scope;
+  try {
+    scope = computeScope(repoRoot, topic);
+  } catch (err) {
+    console.error(err instanceof RecheckError ? err.message : `Scope failed: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  const errors: string[] = [];
+  if (input?.scopeHead !== scope.head) errors.push(`scopeHead ${String(input?.scopeHead).slice(0, 12)} is not the current HEAD ${scope.head.slice(0, 12)}; run the scope again`);
+  const byId = new Map(scope.findings.map((f) => [f.id, f]));
+  const results: any[] = Array.isArray(input?.results) ? input.results : [];
+  if (!Array.isArray(input?.results)) errors.push("results must be an array");
+  const accepted = new Map<string, any>();
+  for (const r of results) {
+    const f = byId.get(r?.id);
+    if (!f) { errors.push(`unknown finding id ${JSON.stringify(r?.id)}`); continue; }
+    if (f.scope === "cannot-scope") { errors.push(`${f.id} cannot be scoped — manual review only, no AI result is recorded`); continue; }
+    if (f.scope !== "affected") { errors.push(`${f.id} is not in scope (no cited file changed)`); continue; }
+    if (!RESULTS.includes(r.result)) { errors.push(`${f.id}: result must be one of ${RESULTS.join(", ")}`); continue; }
+    if (typeof r.evidence !== "string" || r.evidence.trim().length === 0) { errors.push(`${f.id}: evidence is required (what the current code shows)`); continue; }
+    if (accepted.has(f.id)) { errors.push(`${f.id}: more than one result`); continue; }
+    const paths = [...f.files, ...f.changes.filter((c) => c.to).map((c) => c.to as string)];
+    if (r.fixCommit !== undefined) {
+      if (r.result !== "fixed") { errors.push(`${f.id}: fixCommit is only valid for a fixed finding`); continue; }
+      if (typeof r.fixCommitEvidence !== "string" || !r.fixCommitEvidence.trim()) { errors.push(`${f.id}: fixCommit needs fixCommitEvidence`); continue; }
+      if (!commitTouches(repoRoot, scope.baseline.head, String(r.fixCommit), paths)) { errors.push(`${f.id}: fixCommit ${String(r.fixCommit).slice(0, 12)} is not a commit since the baseline that touches the cited files`); continue; }
+    }
+    accepted.set(f.id, { ...r, paths });
+  }
+  if (errors.length) {
+    console.log(JSON.stringify({ ok: false, recorded: false, errors }, null, 2));
+    process.exit(1);
+  }
+
+  let state = readState(repoRoot) ?? freshState(null);
+  state = migrateState(state);
+  state.audits = state.audits ?? {};
+  const rec: TopicRecord = state.audits[scope.auditFile] ?? { topic: scope.topic };
+  const approvalBefore = JSON.stringify(rec.approval ?? null);
+  const ver = rec.verification ?? { verifiedHead: null, verifiedAt: null, findings: {}, history: [] };
+  const at = nowIso();
+  const affected = scope.findings.filter((f) => f.scope === "affected");
+  const missing = affected.filter((f) => !accepted.has(f.id)).map((f) => f.id);
+  for (const f of scope.findings) {
+    const r = accepted.get(f.id);
+    const prev = ver.findings[f.id];
+    const base = { heading: f.heading, severity: f.severity, files: f.files };
+    if (r) {
+      const candidate = r.result === "fixed" ? candidateCommit(repoRoot, scope.baseline.head, r.paths) : null;
+      ver.findings[f.id] = {
+        ...base,
+        result: r.result,
+        evidence: String(r.evidence).trim().slice(0, MAX_EVIDENCE),
+        changes: f.changes,
+        // The last commit that touched the cited files — a candidate, never presented as confirmed.
+        candidateFixCommit: candidate,
+        confirmedFixCommit: r.fixCommit !== undefined ? String(r.fixCommit) : null,
+        confirmedFixEvidence: r.fixCommit !== undefined ? String(r.fixCommitEvidence).trim().slice(0, MAX_EVIDENCE) : null,
+        // Sticky: once a finding needs human review, no later AI result clears it. Clearing it
+        // needs an explicit human-review step, which 0.13.0 does not have.
+        needsHumanReview: r.result === "changed" || prev?.needsHumanReview === true,
+        humanReviewRequiredSince: prev?.humanReviewRequiredSince ?? (r.result === "changed" ? at : null),
+        verifiedAt: at,
+        verifiedHead: scope.head,
+        source: "ai-reverification",
+      };
+    } else if (f.scope === "cannot-scope") {
+      ver.findings[f.id] = { ...(prev ?? {}), ...base, result: "cannot-scope", needsHumanReview: true, humanReviewRequiredSince: prev?.humanReviewRequiredSince ?? at, note: "no usable file reference — manual review" };
+    } else if (f.scope === "affected") {
+      // In scope but not verified in this run: stays pending; the baseline does not advance.
+      ver.findings[f.id] = { ...(prev ?? { result: "open" }), ...base, pendingSince: prev?.pendingSince ?? at };
+    } else if (!prev) {
+      ver.findings[f.id] = { ...base, result: "open", note: "as approved; no cited file changed since the baseline" };
+    }
+  }
+  const complete = missing.length === 0;
+  if (complete) {
+    ver.verifiedHead = scope.head;
+    ver.verifiedAt = at;
+    for (const f of affected) delete ver.findings[f.id].pendingSince;
+  }
+  const count = (res: string) => affected.filter((f) => accepted.get(f.id)?.result === res).length;
+  ver.history = [
+    ...(ver.history ?? []),
+    {
+      at, head: scope.head, baseline: scope.baseline.head, baselineLabel: scope.baseline.label, mode: scope.mode, complete,
+      counts: { stillOpen: count("still-open"), fixed: count("fixed"), changed: count("changed"), pending: missing.length, unaffected: scope.counts.unaffected, cannotScope: scope.counts.cannotScope },
+    },
+  ].slice(-MAX_HISTORY);
+  rec.verification = ver;
+  rec.topic = scope.topic;
+  if (JSON.stringify(rec.approval ?? null) !== approvalBefore) { console.error("internal: approval record changed"); process.exit(1); }
+  state.audits[scope.auditFile] = rec;
+  writeState(repoRoot, state);
+  console.log(JSON.stringify({
+    ok: true, recorded: true, complete, auditFile: scope.auditFile, mode: scope.mode, baseline: scope.baseline.label,
+    verifiedHead: ver.verifiedHead, verifiedAt: ver.verifiedAt, pending: missing,
+    needsHumanReview: Object.entries(ver.findings).filter(([, v]: any) => v.needsHumanReview).map(([id]) => id).sort(),
+    note: "AI re-verification only — the topic's human approval is unchanged.",
+  }, null, 2));
+  process.exit(complete ? 0 : 3);
 }
 
 // --- commands ---
@@ -796,7 +1197,7 @@ function cmdMigrate(repoRoot: string): void {
 function main(): void {
   const [, , command, repoRoot, ...rest] = process.argv;
   if (!command || !repoRoot) {
-    console.error("Usage: inspection-state.ts <detect|init|sync|set-stage|record-knowledge|migrate> <repo-root> [args...]");
+    console.error("Usage: inspection-state.ts <detect|freshness|init|sync|set-stage|record-knowledge|migrate|stamp-docs|record-approval|record-recheck> <repo-root> [args...]");
     process.exit(1);
   }
   if (!existsSync(repoRoot)) {
@@ -819,10 +1220,12 @@ function main(): void {
   // Protected-branch backstop (0.11.3): every command except the read-only
   // `detect` writes state.json, so refuse before the first mutation while the
   // repository is on main, master or a detached HEAD. No flag bypasses this.
-  if (command !== "detect") guardWrite(repoRoot, `inspection-state ${command}`);
+  if (command !== "detect" && command !== "freshness") guardWrite(repoRoot, `inspection-state ${command}`);
   switch (command) {
     case "detect":
       return cmdDetect(repoRoot);
+    case "freshness":
+      return cmdFreshness(repoRoot);
     case "init":
       return cmdInit(repoRoot, rest[0] ?? null);
     case "sync":
@@ -841,6 +1244,14 @@ function main(): void {
       return cmdRecordKnowledge(repoRoot, rest[0]);
     case "migrate":
       return cmdMigrate(repoRoot);
+    case "stamp-docs":
+      return cmdStampDocs(repoRoot, rest);
+    case "record-approval":
+      if (!rest[0]) { console.error("Usage: inspection-state.ts record-approval <repo-root> <topic>"); process.exit(1); }
+      return cmdRecordApproval(repoRoot, rest[0]);
+    case "record-recheck":
+      if (!rest[0] || !rest[1]) { console.error("Usage: inspection-state.ts record-recheck <repo-root> <topic> <results.json|->"); process.exit(1); }
+      return cmdRecordRecheck(repoRoot, rest[0], rest[1]);
     default:
       console.error(`Unknown command "${command}".`);
       process.exit(1);

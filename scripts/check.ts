@@ -24,6 +24,7 @@
 import { spawnSync } from "child_process";
 import { existsSync, readdirSync } from "fs";
 import { dirname, join } from "path";
+import { isEntryPoint } from "./entrypoint.ts";
 
 const HERE = import.meta.dirname;
 const REPO_ROOT = dirname(HERE);
@@ -31,11 +32,14 @@ const REPO_ROOT = dirname(HERE);
 interface Phase { name: string; why: string; suites: string[] }
 
 const PHASES: Phase[] = [
-  { name: "Runtime", why: "Node.js version policy and helper entry points", suites: ["node-preflight", "entrypoint"] },
+  { name: "Runtime", why: "Node.js version policy, helper entry points and the suite runner", suites: ["node-preflight", "entrypoint", "check"] },
   {
     name: "Helpers",
     why: "the deterministic code the workflow calls",
-    suites: ["knowledge-model", "inspection-state", "repo-knowledge", "knowledge-evidence", "knowledge-refresh-guard", "resolve-repo-root", "work-branch"],
+    suites: [
+      "knowledge-model", "inspection-state", "repo-knowledge", "knowledge-evidence", "knowledge-refresh-guard", "resolve-repo-root", "work-branch",
+      "git-paths", "freshness-contract", "doc-header", "audit-recheck", "session-cost",
+    ],
   },
   { name: "Safety", why: "the hook that gates every Inspector write", suites: ["write-guard"] },
   { name: "Contracts", why: "instructions and code cannot drift apart", suites: ["agent-contract", "knowledge-templates"] },
@@ -47,26 +51,61 @@ const NOT_PROVEN = [
   "a live Claude Code session (scripts/live-smoke.ts is a separate, paid, on-demand run)",
 ];
 
-interface SuiteResult {
+export interface SuiteResult {
   suite: string; pass: number; fail: number; skip: number; exitCode: number; failLines: string[]; skipLines: string[]; missing: boolean;
+  /** The terminating signal, when the suite was killed. */
+  signal: string | null;
+  /** True when the suite ended unsuccessfully without reporting a FAIL line: it crashed or was killed. */
+  crashed: boolean;
+  /** For a failed or crashed suite: why, from the process itself (spawn error, signal, stderr / stdout tail). */
+  diagnostics: string[];
 }
 
-function runSuite(suite: string): SuiteResult {
-  const path = join(HERE, `${suite}.test.ts`);
-  const empty: SuiteResult = { suite, pass: 0, fail: 0, skip: 0, exitCode: 0, failLines: [], skipLines: [], missing: false };
-  if (!existsSync(path)) return { ...empty, missing: true, exitCode: 1 };
-  const proc = spawnSync(process.execPath, ["--no-warnings", path], { encoding: "utf-8", cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 });
-  const lines = `${proc.stdout ?? ""}${proc.stderr ?? ""}`.split(/\r?\n/);
+const tail = (text: string, n: number) => text.split(/\r?\n/).filter((l) => l.trim() !== "").slice(-n);
+
+/** Run one suite file with `node --no-warnings` and count its PASS / FAIL / SKIP lines. */
+export function runSuite(path: string, suite: string, cwd = REPO_ROOT): SuiteResult {
+  const empty: SuiteResult = { suite, pass: 0, fail: 0, skip: 0, exitCode: 0, failLines: [], skipLines: [], missing: false, signal: null, crashed: false, diagnostics: [] };
+  if (!existsSync(path)) return { ...empty, missing: true, exitCode: 1, diagnostics: [`suite file not found: ${path}`] };
+  const proc = spawnSync(process.execPath, ["--no-warnings", path], { encoding: "utf-8", cwd, maxBuffer: 64 * 1024 * 1024 });
+  const stdout = proc.stdout ?? "", stderr = proc.stderr ?? "";
+  const lines = `${stdout}\n${stderr}`.split(/\r?\n/);
+  const fail = lines.filter((l) => l.startsWith("FAIL ")).length;
+  const exitCode = proc.status ?? 1;
+  const signal = proc.signal ?? null;
+  const unsuccessful = exitCode !== 0 || signal !== null || proc.error !== undefined;
+  const crashed = unsuccessful && fail === 0;
+  const diagnostics: string[] = [];
+  if (unsuccessful) {
+    diagnostics.push(`exit code ${proc.status === null ? "none" : proc.status}${signal ? `, terminated by ${signal}` : ""}${crashed ? " — ended without a FAIL line (crashed)" : ""}`);
+    if (proc.error) diagnostics.push(`spawn error: ${proc.error.message}`);
+    const err = tail(stderr, 30);
+    if (err.length) diagnostics.push("stderr (last lines):", ...err.map((l) => `  ${l}`));
+    if (crashed) {
+      const out = tail(stdout, 10);
+      if (out.length) diagnostics.push("stdout (last lines):", ...out.map((l) => `  ${l}`));
+    }
+  }
   return {
     suite,
     pass: lines.filter((l) => l.startsWith("PASS ")).length,
-    fail: lines.filter((l) => l.startsWith("FAIL ")).length,
+    fail,
     skip: lines.filter((l) => l.startsWith("SKIP ")).length,
-    exitCode: proc.status ?? 1,
+    exitCode: signal !== null && exitCode === 0 ? 1 : exitCode,
     failLines: lines.filter((l) => l.startsWith("FAIL ")),
     skipLines: lines.filter((l) => l.startsWith("SKIP ")),
     missing: false,
+    signal,
+    crashed,
+    diagnostics,
   };
+}
+
+/** PASS only when the suite exited 0, unsignalled, with no FAIL line. A crash is always a failure. */
+export function verdictOf(r: SuiteResult): "PASS" | "FAIL" | "CRASH" | "MISSING" {
+  if (r.missing) return "MISSING";
+  if (r.crashed) return "CRASH";
+  return r.fail > 0 || r.exitCode !== 0 || r.signal !== null ? "FAIL" : "PASS";
 }
 
 const pad = (s: string, n: number) => (s.length >= n ? s : s + " ".repeat(n - s.length));
@@ -90,13 +129,13 @@ function main(): void {
     if (suites.length === 0) continue;
     console.log(`\nPhase ${PHASES.indexOf(phase) + 1} · ${phase.name} — ${phase.why}`);
     for (const suite of suites) {
-      const r = runSuite(suite);
+      const r = runSuite(join(HERE, `${suite}.test.ts`), suite);
       results.push(r);
       if (r.missing) { console.log(`  ${pad("MISSING", 7)} ${pad(suite, 26)} suite file not found`); continue; }
-      const verdict = r.fail > 0 || r.exitCode !== 0 ? "FAIL" : "PASS";
+      const verdict = verdictOf(r);
       console.log(`  ${pad(verdict, 7)} ${pad(suite, 26)} ${String(r.pass).padStart(4, " ")} assertions${r.skip > 0 ? `, ${r.skip} skipped` : ""}`);
       for (const line of [...r.failLines, ...r.skipLines]) console.log(`          ${line}`);
-      if (r.exitCode !== 0 && r.fail === 0) console.log(`          exited ${r.exitCode} without a FAIL line`);
+      for (const line of r.diagnostics) console.log(`          ${line}`);
     }
   }
 
@@ -104,11 +143,12 @@ function main(): void {
   const totalFail = results.reduce((n, r) => n + r.fail, 0);
   const totalSkip = results.reduce((n, r) => n + r.skip, 0);
   const missing = results.filter((r) => r.missing);
-  const broken = results.filter((r) => !r.missing && (r.fail > 0 || r.exitCode !== 0));
+  const broken = results.filter((r) => verdictOf(r) === "FAIL" || verdictOf(r) === "CRASH");
+  const crashedCount = results.filter((r) => r.crashed).length;
   const ran = results.length - missing.length;
 
   console.log(`\n${"─".repeat(63)}`);
-  console.log(`${ran} suites · ${totalPass} assertions · ${totalFail} failures · ${totalSkip} skipped`);
+  console.log(`${ran} suites · ${totalPass} assertions · ${totalFail} failures · ${totalSkip} skipped${crashedCount ? ` · ${crashedCount} suite(s) crashed` : ""}`);
 
   if (unregistered.length > 0) {
     console.log(`\nUNREGISTERED suite(s) on disk, not run: ${unregistered.join(", ")}`);
@@ -120,7 +160,7 @@ function main(): void {
   const incomplete = totalSkip > 0;
   const failed = broken.length > 0 || missing.length > 0 || unregistered.length > 0 || emptyRun || (strict && incomplete);
   if (failed) {
-    const names = [...broken.map((r) => `${r.suite} (${r.fail || "exit " + r.exitCode})`), ...missing.map((r) => `${r.suite} (missing)`)];
+    const names = [...broken.map((r) => `${r.suite} (${r.crashed ? `crashed: ${r.signal ?? "exit " + r.exitCode}` : r.fail || "exit " + r.exitCode})`), ...missing.map((r) => `${r.suite} (missing)`)];
     if (strict && incomplete) names.push(`--strict: run incomplete (${totalSkip} skipped assertion(s))`);
     if (names.length > 0) console.log(`FAILED: ${names.join(", ")}`);
   } else if (incomplete) {
@@ -134,4 +174,4 @@ function main(): void {
   process.exitCode = failed ? 1 : 0;
 }
 
-main();
+if (isEntryPoint(import.meta.url)) main();
