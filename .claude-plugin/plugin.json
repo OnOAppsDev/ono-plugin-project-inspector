@@ -19,7 +19,8 @@
     "./commands/inspect-status.md",
     "./commands/inspect-topic.md",
     "./commands/inspect-approve.md",
-    "./commands/inspect-sync.md"
+    "./commands/inspect-sync.md",
+    "./commands/inspect-recheck.md"
   ],
   "agents": [
     "./agents/project-inspector.md"
@@ -31,7 +32,8 @@
     "./skills/project-docs",
     "./skills/audit-breakdown",
     "./skills/audit-approve",
-    "./skills/audit-sync"
+    "./skills/audit-sync",
+    "./skills/audit-recheck"
   ],
   "hardConstraints": {
     "modifiesSourceCode": false,

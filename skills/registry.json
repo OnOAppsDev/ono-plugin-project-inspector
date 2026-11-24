@@ -142,6 +142,21 @@
         "after": "after-audit-sync"
       },
       "notes": "On-demand documentation-maintenance tool. NOT part of the linear inspection sequence: the agent must never run it as a normal workflow stage (workflowRole: maintenance). Invoked explicitly via /inspect-sync (agent maintenance mode) once topics are Approved. It marks nothing Approved (that responsibility moved to audit-approve) — it only regenerates the audit-sync managed blocks inside CLAUDE.md from ALL currently-Approved topics, verifies AUDIT.md consistency, detects documentation drift, repairs broken references, and reports. Re-runs replace the managed blocks rather than duplicating them, so it is safe to run repeatedly."
+    },
+    {
+      "id": "audit-recheck",
+      "enabled": true,
+      "type": "workflow",
+      "stage": 4,
+      "role": "maintenance",
+      "workflowRole": "maintenance",
+      "path": "skills/audit-recheck",
+      "produces": [],
+      "requires": ["AUDIT.md"],
+      "repeatable": true,
+      "requiresApproval": true,
+      "hooks": { "after": "after-audit-recheck" },
+      "notes": "On-demand maintenance tool (0.13.0), invoked via /inspect-recheck <topic> (agent maintenance mode). NOT part of the linear inspection sequence. Re-verifies only the findings of one Approved topic whose cited files changed since its verification baseline (scripts/audit-recheck.ts scope), and records still-open / fixed / changed results in .ono/state.json via inspection-state.ts record-recheck. AI re-verification only: it never approves, never changes AUDIT.md, audit files or CLAUDE.md."
     }
   ]
 }
