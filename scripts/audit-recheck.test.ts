@@ -31,7 +31,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync,
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { parseFindings } from "./audit-recheck.ts";
-import { g, helper, inspectedRepo, PLUGIN } from "./fixtures/inspected.ts";
+import { extractRelease, g, helper, inspectedRepo, PLUGIN } from "./fixtures/inspected.ts";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -309,9 +309,7 @@ try {
     const since = state(st).audits[AUDIT_FILE].verification.findings[catId].humanReviewRequiredSince;
     check("R17 inspection-state sync keeps the flag and its date", helper(st, "inspection-state.ts", "sync", st).code === 0 && state(st).audits[AUDIT_FILE].verification.findings[catId].needsHumanReview === true && state(st).audits[AUDIT_FILE].verification.findings[catId].humanReviewRequiredSince === since);
     const s012 = join(root, "inspector-0.12.0");
-    mkdirSync(s012);
-    const archive = spawnSync("git", ["archive", "edbc2772fb0eb11d3fa5e51a89e81fbb9b4b3f0d", "scripts", "skills", ".claude-plugin"], { cwd: PLUGIN, maxBuffer: 64 * 1024 * 1024 }).stdout;
-    spawnSync("tar", ["-x", "-C", s012], { input: archive });
+    extractRelease("edbc2772fb0eb11d3fa5e51a89e81fbb9b4b3f0d", ["scripts", "skills", ".claude-plugin"], s012);
     const old = spawnSync(process.execPath, ["--no-warnings", join(s012, "scripts", "inspection-state.ts"), "sync", st], { encoding: "utf-8" });
     check("R17 a sync by the previous release (0.12.0) keeps it too", old.status === 0 && state(st).audits[AUDIT_FILE].verification.findings[catId].needsHumanReview === true, old.stderr);
   }

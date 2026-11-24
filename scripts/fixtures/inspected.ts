@@ -7,9 +7,9 @@
  * COMPLETE at that HEAD. Every commit uses a fixed identity and fixed dates.
  */
 
-import { execFileSync } from "child_process";
-import { cpSync, existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { execFileSync, spawnSync } from "child_process";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { dirname, isAbsolute, join, resolve, sep } from "path";
 
 const HERE = import.meta.dirname;
 export const PLUGIN = join(HERE, "..", "..");
@@ -70,11 +70,86 @@ export function inspectedRepo(dir: string, branch = "chore/project-inspection", 
   return head;
 }
 
-/** Commit a blob at an exact path through the index only (names the OS may not allow on disk). */
+const NUL = "\u0000";
+/** Git for a temporary fixture repository only: NTFS path protection off for this one command. */
+function fixtureGit(dir: string, args: string[], input?: string): string {
+  return execFileSync("git", ["-c", "core.protectNTFS=false", "-c", "core.precomposeUnicode=false", ...args], {
+    cwd: dir, env: GIT_ENV, encoding: "utf-8", input, stdio: ["pipe", "pipe", "pipe"],
+  }).replace(/\n$/, "");
+}
+
+/** `tree` with `blob` placed at `parts` (creating subtrees as needed); returns the new tree id. */
+function treeWith(dir: string, tree: string | null, parts: string[], blob: string): string {
+  const entries: Array<{ mode: string; type: string; sha: string; name: string }> = [];
+  if (tree) {
+    for (const e of fixtureGit(dir, ["ls-tree", "-z", tree]).split(NUL).filter(Boolean)) {
+      const tab = e.indexOf("\t");
+      const [mode, type, sha] = e.slice(0, tab).split(" ");
+      entries.push({ mode, type, sha, name: e.slice(tab + 1) });
+    }
+  }
+  const [head, ...rest] = parts;
+  const i = entries.findIndex((e) => e.name === head);
+  if (rest.length === 0) {
+    const entry = { mode: "100644", type: "blob", sha: blob, name: head };
+    if (i === -1) entries.push(entry); else entries[i] = entry;
+  } else {
+    const sub = treeWith(dir, i !== -1 && entries[i].type === "tree" ? entries[i].sha : null, rest, blob);
+    const entry = { mode: "040000", type: "tree", sha: sub, name: head };
+    if (i === -1) entries.push(entry); else entries[i] = entry;
+  }
+  return fixtureGit(dir, ["mktree", "-z"], entries.map((e) => `${e.mode} ${e.type} ${e.sha}\t${e.name}${NUL}`).join(""));
+}
+
+/**
+ * Commit a blob at an EXACT path by building Git objects directly (hash-object, mktree -z,
+ * commit-tree, update-ref) — never through the index or the file system. Names that cannot
+ * exist on disk on a platform (Windows: `"`, `\`, tab, newline) or that the platform would
+ * rewrite (macOS: NFD -> NFC) are stored exactly, on every OS. The work tree and index are
+ * left untouched, so callers inspect commits only (detect / diff), never `git add -A` after.
+ */
 export function commitIndexPath(dir: string, path: string, body: string, message: string): void {
-  const sha = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: dir, input: body, encoding: "utf-8" }).trim();
-  // core.precomposeUnicode=false: Git on macOS would otherwise rewrite an NFD argument to NFC,
-  // making it impossible to store the exact (decomposed) path the test needs.
-  execFileSync("git", ["-c", "core.precomposeUnicode=false", "update-index", "--add", "--cacheinfo", `100644,${sha},${path}`], { cwd: dir });
-  g(dir, "commit", "-q", "-m", message);
+  const blob = fixtureGit(dir, ["hash-object", "-w", "--stdin"], body);
+  const parent = fixtureGit(dir, ["rev-parse", "HEAD"]);
+  const tree = treeWith(dir, fixtureGit(dir, ["rev-parse", "HEAD^{tree}"]), path.split("/"), blob);
+  const commit = fixtureGit(dir, ["commit-tree", tree, "-p", parent, "-m", message]);
+  fixtureGit(dir, ["update-ref", "HEAD", commit, parent]);
+  const stored = fixtureGit(dir, ["ls-tree", "-z", "-r", "--name-only", "HEAD"]).split(NUL);
+  if (!stored.includes(path)) throw new Error(`fixture: ${JSON.stringify(path)} was not stored exactly`);
+}
+
+/**
+ * Extract the files under `paths` of an exact commit of THIS plugin repository into `dest`
+ * using Git objects only (no tar, no archive tools): `ls-tree -r -z` lists the blobs and
+ * `cat-file blob` writes each one byte for byte (binary-safe). Executable modes are kept;
+ * any other mode (symlink, submodule) and any path that would leave `dest` is refused.
+ * Every git call is checked; an incomplete extraction throws.
+ */
+export function extractRelease(commit: string, paths: string[], dest: string, repo: string = PLUGIN): { files: number } {
+  const run = (args: string[]): Buffer => {
+    const r = spawnSync("git", args, { cwd: repo, maxBuffer: 256 * 1024 * 1024 });
+    if (r.error || r.status !== 0) throw new Error(`extractRelease: git ${args.join(" ")} failed (${r.error?.message ?? `exit ${r.status}`}): ${r.stderr?.toString().trim()}`);
+    return r.stdout;
+  };
+  run(["cat-file", "-e", `${commit}^{commit}`]);
+  const root = resolve(dest);
+  mkdirSync(root, { recursive: true });
+  const entries = run(["-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--full-tree", commit, "--", ...paths]).toString("utf-8").split(NUL).filter(Boolean);
+  if (entries.length === 0) throw new Error(`extractRelease: ${commit} has no files under ${paths.join(", ")}`);
+  let files = 0;
+  for (const e of entries) {
+    const tab = e.indexOf("\t");
+    const [mode, type, sha] = e.slice(0, tab).split(" ");
+    const rel = e.slice(tab + 1);
+    if (type !== "blob" || !["100644", "100755"].includes(mode)) throw new Error(`extractRelease: unsupported entry ${mode} ${type} ${rel}`);
+    const target = resolve(root, ...rel.split("/"));
+    if (isAbsolute(rel) || rel.split("/").includes("..") || (target !== root && !target.startsWith(root + sep))) throw new Error(`extractRelease: path escapes the destination: ${rel}`);
+    const bytes = run(["cat-file", "blob", sha]);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, bytes);
+    if (mode === "100755") chmodSync(target, 0o755);
+    if (statSync(target).size !== bytes.length) throw new Error(`extractRelease: ${rel} was not written completely`);
+    files++;
+  }
+  return { files };
 }

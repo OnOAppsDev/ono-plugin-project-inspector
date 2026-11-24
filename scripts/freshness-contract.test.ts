@@ -19,10 +19,10 @@
  */
 
 import { execFileSync, spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { g, helper, inspectedRepo, PLUGIN } from "./fixtures/inspected.ts";
+import { extractRelease, g, helper, inspectedRepo, PLUGIN } from "./fixtures/inspected.ts";
 import { childEnv, pathList } from "./fixtures/platform.ts";
 
 let failures = 0;
@@ -157,8 +157,31 @@ try {
   // --- F7: the previous release (0.12.0) with 0.13.0 state ------------------------------------------------------
   const old = join(root, "inspector-0.12.0");
   mkdirSync(old);
-  const archive = execFileSync("git", ["archive", "edbc2772fb0eb11d3fa5e51a89e81fbb9b4b3f0d", "scripts", "skills", ".claude-plugin"], { cwd: PLUGIN, maxBuffer: 64 * 1024 * 1024 });
-  execFileSync("tar", ["-x", "-C", old], { input: archive });
+  const REL_0120 = "edbc2772fb0eb11d3fa5e51a89e81fbb9b4b3f0d";
+  const ex = extractRelease(REL_0120, ["scripts", "skills", ".claude-plugin"], old);
+  check("F7 the 0.12.0 helpers were extracted from the exact commit (Git objects, no tar)", ex.files > 20, String(ex.files));
+  const shown = execFileSync("git", ["show", `${REL_0120}:scripts/inspection-state.ts`], { cwd: PLUGIN });
+  check("F7 extraction is byte-for-byte", Buffer.compare(shown, readFileSync(join(old, "scripts", "inspection-state.ts"))) === 0);
+  if (process.platform !== "win32") check("F7 the executable bit is kept (write-guard.sh is 100755)", (statSync(join(old, "scripts", "write-guard.sh")).mode & 0o111) !== 0);
+  else check("F7 the 100755 file is extracted on Windows too (no POSIX mode bits there)", existsSync(join(old, "scripts", "write-guard.sh")));
+  let threw = "";
+  try { extractRelease("0123456789abcdef0123456789abcdef01234567", ["scripts"], join(root, "nope")); } catch (e) { threw = (e as Error).message; }
+  check("F7 an unknown commit fails explicitly", /extractRelease: git cat-file -e/.test(threw), threw);
+  threw = "";
+  try { extractRelease(REL_0120, ["no-such-dir"], join(root, "nope2")); } catch (e) { threw = (e as Error).message; }
+  check("F7 an empty selection fails explicitly", /has no files under/.test(threw), threw);
+  // A hostile commit: Git stores a tree entry named "..", which would write outside the destination.
+  const evil = join(root, "evil-repo");
+  mkdirSync(evil);
+  g(evil, "init", "-q", "-b", "work");
+  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: evil, input: "evil\n", encoding: "utf-8" }).trim();
+  const sub = execFileSync("git", ["mktree", "-z"], { cwd: evil, input: `100644 blob ${blob}\t..\u0000`, encoding: "utf-8" }).trim();
+  const top = execFileSync("git", ["mktree", "-z"], { cwd: evil, input: `040000 tree ${sub}\tscripts\u0000`, encoding: "utf-8" }).trim();
+  const evilCommit = g(evil, "commit-tree", top, "-m", "evil");
+  const evilDest = join(root, "evil-dest", "inner");
+  threw = "";
+  try { extractRelease(evilCommit, ["scripts"], evilDest, evil); } catch (e) { threw = (e as Error).message; }
+  check("F7 a path that would leave the destination is refused, nothing written outside", /path escapes the destination/.test(threw) && readdirSync(evilDest).length === 0 && readdirSync(join(root, "evil-dest")).join(",") === "inner", threw);
   const oldVersion = JSON.parse(readFileSync(join(old, ".claude-plugin", "plugin.json"), "utf-8")).version;
   check("F7 the previous release really is 0.12.0", oldVersion === "0.12.0");
   const shared = join(root, "shared");

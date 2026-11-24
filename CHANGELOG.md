@@ -37,7 +37,9 @@ The Inspector requirements from the November 22 handoff addendum: generation hea
   It contains aggregate numbers only — no prompts, code, paths or names. Every label taken from the transcript is allowlisted: Claude Code's built-in tool names as they are, every MCP tool as `mcp` (connector names are user-chosen and can name a customer), any other tool as `other`, and Anthropic model ids only — a provider ARN, inference profile or proxy name becomes `other-model`. It makes no network calls or model calls, and writes nothing. No paid benchmark was run. The only local data point, the earlier initial-inspection smoke run, is an initial inspection, not a refresh.
 - **State (`.ono/state.json`).** Additive top-level keys only: `knowledge`, `documents` and `audits`. The schema stays v1. The 0.12.0 helpers read such state and keep these keys when they sync, and the Dev Plugin only checks that the file exists.
 - **Tests.**
-  - New suites: `git-paths` (25 assertions), `freshness-contract` (31, including the real 0.12.0 helpers run against 0.13.0 state), `doc-header` (69), `audit-recheck` (83) and `session-cost` (48).
+  - New suites: `git-paths` (25 assertions), `freshness-contract` (37, including the real 0.12.0 helpers run against 0.13.0 state), `doc-header` (69), `audit-recheck` (83), `session-cost` (48) and `check` (10, the suite runner).
+  - Portable fixtures. File names a platform cannot hold on disk (Windows: `"`, `\`, tab, newline) or would rewrite (macOS: NFD → NFC) are committed through Git objects (`mktree -z` / `commit-tree`), so these cases run on every OS. The previous release is extracted from its exact commit with Git objects only (byte-for-byte, executable bit kept, paths confined to the destination) — no `tar`.
+  - `scripts/check.ts` reports a suite that crashes or is killed without a FAIL line as `CRASH`, a failed suite, with its exit code or signal and the tail of its stderr and stdout.
   - `compat-0.11` checks the additive state keys explicitly.
   - CI checks out full history (`fetch-depth: 0`) for the 0.12.0 compatibility check; the six-job matrix is unchanged.
 - **Known issues (not changed here).**
