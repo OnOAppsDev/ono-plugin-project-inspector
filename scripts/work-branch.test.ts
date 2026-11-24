@@ -7,18 +7,18 @@
  * REAL CLIs by absolute path, exactly as the agent does.
  *
  * No external test framework. Run with:
- *   bun scripts/work-branch.test.ts
+ *   node --no-warnings scripts/work-branch.test.ts
  */
 
 import { execFileSync } from "child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures";
-import { assertWritable, branchState, DEFAULT_WORK_BRANCH, EXIT_PROTECTED, ProtectedBranchError } from "./work-branch";
-import { REPO_KNOWLEDGE_SCHEMA_VERSION } from "./repo-knowledge";
+import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures.ts";
+import { assertWritable, branchState, DEFAULT_WORK_BRANCH, EXIT_PROTECTED, ProtectedBranchError } from "./work-branch.ts";
+import { REPO_KNOWLEDGE_SCHEMA_VERSION } from "./repo-knowledge.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const RUNTIME = process.execPath;
 
 let failures = 0;
@@ -31,7 +31,7 @@ interface Run { code: number; stdout: string; stderr: string; json: any }
 function run(script: string, cwd: string, ...args: string[]): Run {
   let code = 0, stdout = "", stderr = "";
   try {
-    stdout = execFileSync(RUNTIME, [join(HERE, script), ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    stdout = execFileSync(RUNTIME, ["--no-warnings", join(HERE, script), ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (err: any) {
     code = typeof err.status === "number" ? err.status : 1;
     stdout = err.stdout?.toString() ?? "";
@@ -222,22 +222,37 @@ try {
   }
 
   // --- W7: failed branch creation -> stop, nothing written ----------------------------
-  {
+  // Two ways to make Git fail to create the ref: unwritable refs/heads (POSIX permissions;
+  // Windows ignores directory modes) and an existing ref lock file (every platform).
+  const failures7: Array<{ how: string; inject: (repo: string) => void; undo: (repo: string) => void }> = [
+    {
+      how: "a stale ref lock",
+      inject: (repo) => { mkdirSync(join(repo, ".git", "refs", "heads", "chore"), { recursive: true }); writeFileSync(join(repo, ".git", "refs", "heads", "chore", "project-inspection.lock"), ""); },
+      undo: (repo) => rmSync(join(repo, ".git", "refs", "heads", "chore", "project-inspection.lock")),
+    },
+  ];
+  if (process.platform !== "win32") {
+    failures7.unshift({
+      how: "unwritable refs",
+      inject: (repo) => chmodSync(join(repo, ".git", "refs", "heads"), 0o555),
+      undo: (repo) => chmodSync(join(repo, ".git", "refs", "heads"), 0o755),
+    });
+  }
+  for (const { how, inject, undo } of failures7) {
     const repo = repoOn(root, "main");
     write(repo, "local.txt", "dirty\n");
-    const refsDir = join(repo, ".git", "refs", "heads");
-    chmodSync(refsDir, 0o555); // Git cannot create the new branch ref
+    inject(repo);
     const before = gitSnapshot(repo);
     const r = wb(repo, "create", repo, DEFAULT_WORK_BRANCH);
-    chmodSync(refsDir, 0o755);
-    check("W7 unwritable refs -> exit 7", r.code === 7, r.stdout + r.stderr);
-    check("W7 the failure is reported with the branch not created", r.json?.reason === "switch-failed" && r.json?.branchExists === false, r.stdout);
-    check("W7 STOP message says nothing was written", /STOP: nothing was inspected or written/.test(r.stderr), r.stderr);
-    check("W7 still on main, HEAD unchanged", current(repo) === "main" && git(repo, "rev-parse", "HEAD") === before.head);
-    check("W7 no Inspector output", !existsSync(join(repo, ".ono")) && !existsSync(join(repo, "CLAUDE.md")));
-    check("W7 local change untouched", readFileSync(join(repo, "local.txt"), "utf-8") === "dirty\n");
-    check("W7 writes stay refused after the failure", wb(repo, "assert", repo).code === EXIT_PROTECTED);
-    check("W7 a retry after fixing the cause succeeds", wb(repo, "create", repo, DEFAULT_WORK_BRANCH).code === 0 && current(repo) === DEFAULT_WORK_BRANCH);
+    undo(repo);
+    check(`W7 [${how}] -> exit 7`, r.code === 7, r.stdout + r.stderr);
+    check(`W7 [${how}] the failure is reported with the branch not created`, r.json?.reason === "switch-failed" && r.json?.branchExists === false, r.stdout);
+    check(`W7 [${how}] STOP message says nothing was written`, /STOP: nothing was inspected or written/.test(r.stderr), r.stderr);
+    check(`W7 [${how}] still on main, HEAD unchanged`, current(repo) === "main" && git(repo, "rev-parse", "HEAD") === before.head);
+    check(`W7 [${how}] no Inspector output`, !existsSync(join(repo, ".ono")) && !existsSync(join(repo, "CLAUDE.md")));
+    check(`W7 [${how}] local change untouched`, readFileSync(join(repo, "local.txt"), "utf-8") === "dirty\n");
+    check(`W7 [${how}] writes stay refused after the failure`, wb(repo, "assert", repo).code === EXIT_PROTECTED);
+    check(`W7 [${how}] a retry after fixing the cause succeeds`, wb(repo, "create", repo, DEFAULT_WORK_BRANCH).code === 0 && current(repo) === DEFAULT_WORK_BRANCH);
   }
 
   // --- W8: nested project root and Claude worktrees -----------------------------------

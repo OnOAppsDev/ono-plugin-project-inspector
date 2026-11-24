@@ -39,7 +39,7 @@
  * preserving the selected subdirectory.
  *
  * Usage:
- *   bun scripts/resolve-repo-root.ts [project-path] [--confirm-nested]
+ *   node --no-warnings scripts/resolve-repo-root.ts [project-path] [--confirm-nested]
  *
  * Exit codes:
  *   0 - resolved a safe Project Root (read `targetRoot` from the JSON stdout)
@@ -51,6 +51,7 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "fs";
 import { execFileSync } from "child_process";
 import { dirname, join, relative, resolve, sep } from "path";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 const CLAUDE_WORKTREE_MARKER = `${sep}.claude${sep}worktrees${sep}`;
 
@@ -322,4 +323,7 @@ function main(): void {
   process.exit(0);
 }
 
-if (import.meta.main) main();
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
+  main();
+}

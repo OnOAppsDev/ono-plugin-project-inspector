@@ -4,27 +4,29 @@
  * Static regression tests for the Inspector agent's execution contract (0.11.2):
  *
  *  - the agent has every tool its own workflow needs (skills run inline in the
- *    agent's context, hooks run Bun helpers, skills write artifacts) and no
+ *    agent's context, hooks run Node.js helpers, skills write artifacts) and no
  *    unrelated ones;
  *  - every plugin-internal path is resolved from the plugin install directory
  *    (`${CLAUDE_PLUGIN_ROOT}` in substituted markdown, `<PLUGIN_ROOT>` in the
  *    hook files the agent reads as plain files) — never relative to the
  *    developer's repository or the current working directory;
  *  - every referenced plugin file actually exists;
- *  - the Bun preflight precedes the first Bun call, and no other runtime is offered;
+ *  - (0.12.0) the Node.js preflight precedes the first helper call, every helper
+ *    runs as `node --no-warnings` with quoted paths, and no other runtime (Bun,
+ *    npx, tsx, ts-node, deno) is invoked or offered;
  *  - (0.11.3) the protected-branch workflow: a read-only branch check at
  *    startup, a single-approval Working-Branch Gate before the first write in
  *    every writing mode, no remote or history-changing Git instruction, and a
  *    mechanical guard in every helper that writes.
  *
  * No external test framework. Run with:
- *   bun scripts/agent-contract.test.ts
+ *   node --no-warnings scripts/agent-contract.test.ts
  */
 
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const PLUGIN = join(HERE, "..");
 
 let failures = 0;
@@ -59,7 +61,7 @@ check("A1 agent name matches what the commands invoke", /\nname: project-inspect
 // Why each tool is needed — derived from the workflow files, so a tool cannot silently become unneeded or required.
 const hookText = hookFiles.map(read).join("\n");
 const skillText = skillFiles.map(read).join("\n");
-check("A1 Bash is required: hooks run Bun helpers", /bun "<PLUGIN_ROOT>\/scripts\//.test(hookText));
+check("A1 Bash is required: hooks run Node.js helpers", /node --no-warnings "<PLUGIN_ROOT>\/scripts\//.test(hookText));
 check("A1 Write is required: skills write their declared artifacts", registry.skills.some((s: any) => s.type === "workflow" && (s.produces ?? []).length > 0));
 check("A1 Edit is required: Update mode / managed blocks edit existing artifacts", /Update/.test(skillText) && /managed block/i.test(skillText));
 check("A1 agent explains that skills run inside its own context", /run inside \*\*your\*\* context/.test(agent));
@@ -73,9 +75,9 @@ check("A2 agent reads hooks by absolute plugin path", agent.includes("`${CLAUDE_
 const all = [agentFile, ...hookFiles, ...skillFiles, ...commandFiles];
 for (const f of all) {
   const text = read(f);
-  check(`A2 ${f}: no bare relative 'bun scripts/' call`, !/bun scripts\//.test(text), (text.match(/.{0,40}bun scripts\/.{0,40}/) ?? [""])[0]);
-  // Other runtimes may only appear inside a prohibition ("never … node / npx tsx …").
-  const offers = text.split("\n").filter((l) => /TypeScript runner|npx tsx|ts-node|\bdeno\b/.test(l) && !/\b(never|not)\b/i.test(l));
+  check(`A2 ${f}: no bare relative 'node scripts/' call`, !/node (--no-warnings )?scripts\//.test(text), (text.match(/.{0,40}node (--no-warnings )?scripts\/.{0,40}/) ?? [""])[0]);
+  // Other runtimes may only appear inside a prohibition ("never … bun / npx / tsx …").
+  const offers = text.split("\n").filter((l) => /TypeScript runner|\bbun\b|\bnpx\b|\btsx\b|ts-node|\bdeno\b/i.test(l) && !/\b(never|not)\b/i.test(l));
   check(`A2 ${f}: no other-runtime fallback offered`, offers.length === 0, offers.join(" | ").slice(0, 200));
 }
 for (const f of hookFiles) {
@@ -96,20 +98,41 @@ for (const s of registry.skills) {
   for (const h of Object.values(s.hooks ?? {}) as string[]) check(`A2 registry hook file exists: hooks/${h}.md`, existsSync(join(PLUGIN, "hooks", `${h}.md`)));
 }
 for (const name of ["inspection-state", "repo-knowledge"]) {
-  check(`A2 skills/${name}: runs its helper from \${CLAUDE_PLUGIN_ROOT}`, read(`skills/${name}/SKILL.md`).includes(`bun "\${CLAUDE_PLUGIN_ROOT}/scripts/${name}.ts"`));
+  check(`A2 skills/${name}: runs its helper from \${CLAUDE_PLUGIN_ROOT}`, read(`skills/${name}/SKILL.md`).includes(`node --no-warnings "\${CLAUDE_PLUGIN_ROOT}/scripts/${name}.ts"`));
 }
 
-// --- A3: Bun preflight ordering ------------------------------------------------
+// --- A3: Node.js preflight ordering (0.12.0) ------------------------------------
 const before = read("hooks/before-inspect.md");
-const preflight = before.indexOf('sh "<PLUGIN_ROOT>/scripts/check-bun.sh"');
-const firstBun = before.search(/bun "<PLUGIN_ROOT>\/scripts\/[a-z-]+\.ts"/);
-check("A3 before-inspect runs the Bun preflight", preflight > 0);
-check("A3 preflight precedes the first Bun helper call", preflight > 0 && firstBun > preflight, `${preflight} vs ${firstBun}`);
-check("A3 preflight is step 0, before root resolution", before.indexOf("0. **Bun preflight") > 0 && before.indexOf("0. **Bun preflight") < before.indexOf("1. **Resolve the Project Root"));
-check("A3 missing Bun stops without writing and without another runtime", /STOP/.test(before.slice(preflight, firstBun)) && /never run a helper with another runtime/i.test(before));
-check("A3 agent runs the preflight in every mode", /Bun preflight .*before the first `bun` call in \*\*every\*\* mode/.test(agent));
+const preflight = before.indexOf('node "<PLUGIN_ROOT>/scripts/node-preflight.mjs"');
+const firstHelper = before.search(/node --no-warnings "<PLUGIN_ROOT>\/scripts\/[a-z-]+\.ts"/);
+check("A3 before-inspect runs the Node.js preflight", preflight > 0);
+check("A3 preflight precedes the first helper call", preflight > 0 && firstHelper > preflight, `${preflight} vs ${firstHelper}`);
+check("A3 preflight is step 0, before root resolution", before.indexOf("0. **Node.js preflight") > 0 && before.indexOf("0. **Node.js preflight") < before.indexOf("1. **Resolve the Project Root"));
+check("A3 unsupported or missing Node.js stops without writing and without another runtime", /STOP/.test(before.slice(preflight, firstHelper)) && /never run a helper with another runtime/i.test(before) && /`node` itself is not found/.test(before));
+check("A3 agent runs the preflight in every mode", /Node\.js preflight .*before the first helper call in \*\*every\*\* mode/.test(agent));
 check("A3 every mode resolves the root and branch through before-inspect steps 0–2", /Every mode — including `status` — first runs `hooks\/before-inspect.md` steps 0–2/.test(agent));
-check("A3 preflight script exists", existsSync(join(PLUGIN, "scripts", "check-bun.sh")));
+check("A3 preflight script exists and the Bun preflight is gone", existsSync(join(PLUGIN, "scripts", "node-preflight.mjs")) && !existsSync(join(PLUGIN, "scripts", "check-bun.sh")));
+// Every helper invocation in the instructions runs with Node.js and quotes its repository path.
+const invocations = all.flatMap((f) => [...read(f).matchAll(/`((?:node|bun|npx|tsx|ts-node|deno|sh) [^`]*scripts\/[^`]*)`/g)].map((m) => `${f}: ${m[1]}`));
+check("A3 helper invocations were found", invocations.length >= 20, String(invocations.length));
+const nonNode = invocations.filter((i) => !/: node (--no-warnings )?"(<PLUGIN_ROOT>|\$\{CLAUDE_PLUGIN_ROOT\})\/scripts\//.test(i));
+check("A3 every helper invocation is `node … \"<plugin path>\"` (no bun, npx, tsx, ts-node, deno or sh)", nonNode.length === 0, nonNode.join(" | ").slice(0, 300));
+const unquoted = invocations.filter((i) => /\s<(TARGET_ROOT|repo-root|name|project-path)>/.test(i));
+check("A3 every repository path and branch-name placeholder is quoted", unquoted.length === 0, unquoted.join(" | ").slice(0, 300));
+check("A3 the agent requires quoting and forbids rewriting TARGET_ROOT", /Quote every path argument/.test(agent) && /never rewrite it into another form/.test(agent));
+
+// No active runtime file depends on Bun: no Bun API, no `bun` executable, no Bun preflight.
+const runtimeFiles = readdirSync(join(PLUGIN, "scripts")).filter((f) => /\.(ts|mjs|sh)$/.test(f) && !f.endsWith(".test.ts"));
+const bunUses: string[] = [];
+for (const f of runtimeFiles) {
+  read(`scripts/${f}`).split("\n").forEach((line, i) => {
+    const code = line.replace(/^\s*(\*|\/\/|#).*$/, ""); // comment lines may mention Bun historically
+    if (/\bBun\.|bun:|["'`]bun["'`]|(^|[\s;|&(])bun\s|check-bun/.test(code)) bunUses.push(`scripts/${f}:${i + 1}`);
+  });
+}
+check("A3 no runtime script uses Bun (API, executable or preflight)", bunUses.length === 0, bunUses.join(", "));
+check("A3 hooks.json does not run Bun", !/\bbun\b/i.test(read("hooks/hooks.json")));
+check("A3 scripts/ is an explicit ES module scope", JSON.parse(read("scripts/package.json")).type === "module");
 
 // --- A4: Project Root contract ---------------------------------------------------
 check("A4 agent distinguishes Project Root and Git Root", /\*\*Project Root\*\*/.test(agent) && /\*\*Git Root\*\*/.test(agent));
@@ -121,9 +144,9 @@ check("A4 decisions stop before anything is written", /Exit 4 \/ `decision` set 
 check("A4 nothing is migrated", /never move, copy, or merge existing Inspector artifacts/.test(before));
 
 // --- A5: protected-branch workflow (0.11.3) ---------------------------------------
-const branchCheck = before.indexOf('bun "<PLUGIN_ROOT>/scripts/work-branch.ts" check <TARGET_ROOT>');
+const branchCheck = before.indexOf('node --no-warnings "<PLUGIN_ROOT>/scripts/work-branch.ts" check "<TARGET_ROOT>"');
 const resolveIdx = before.indexOf("1. **Resolve the Project Root");
-const detectIdx = before.indexOf('inspection-state.ts" detect <TARGET_ROOT>');
+const detectIdx = before.indexOf('inspection-state.ts" detect "<TARGET_ROOT>"');
 check("A5 before-inspect runs a read-only branch check after root resolution and before detect", branchCheck > resolveIdx && resolveIdx > 0 && detectIdx > branchCheck, `${resolveIdx} ${branchCheck} ${detectIdx}`);
 check("A5 the startup branch check never creates a branch", /2\. \*\*Branch state \(read-only\)\.\*\*[^\n]*never create one in this step/.test(before));
 check("A5 startup never migrates (migrate waits for the gate)", /do \*\*not\*\* migrate here/.test(before) && !/invoke `inspection-state` \(`migrate`\) before continuing/.test(before));
@@ -133,8 +156,8 @@ check("A5 gate runs before the first write in every writing mode", /immediately 
 check("A5 gate never runs in status mode or on 'leave unchanged'", /never runs in `status` mode, and never when the developer chose "leave everything unchanged"/.test(gate));
 check("A5 gate passes silently on a working branch", /the gate passes silently: no question, no new branch/.test(gate));
 check("A5 gate asks exactly once and suggests chore/project-inspection", /Ask once\./.test(gate) && /`chore\/project-inspection`/.test(gate) && /give another branch name/.test(gate));
-check("A5 gate creates through the helper by absolute plugin path", gate.includes('bun "${CLAUDE_PLUGIN_ROOT}/scripts/work-branch.ts" create <TARGET_ROOT> <name>'));
-check("A5 gate validates custom names through the helper", gate.includes('bun "${CLAUDE_PLUGIN_ROOT}/scripts/work-branch.ts" check <TARGET_ROOT> <name>'));
+check("A5 gate creates through the helper by absolute plugin path", gate.includes('node --no-warnings "${CLAUDE_PLUGIN_ROOT}/scripts/work-branch.ts" create "<TARGET_ROOT>" "<name>"'));
+check("A5 gate validates custom names through the helper", gate.includes('node --no-warnings "${CLAUDE_PLUGIN_ROOT}/scripts/work-branch.ts" check "<TARGET_ROOT>" "<name>"'));
 check("A5 gate stops on a failed creation", /Exit 7 or anything else — STOP/.test(gate));
 check("A5 gate never reuses, resets or deletes a branch, nor discards changes", /Never\*\* reuse, reset, move, or delete an existing branch/.test(gate) && /never stash, restore, clean, or discard changes/.test(gate));
 check("A5 developer stays on the working branch; no commit/push/PR by the Inspector", /\*\*stays on it\*\*/.test(gate) && /the Inspector never does/.test(gate));
@@ -167,7 +190,7 @@ const helpers = readdirSync(join(PLUGIN, "scripts")).filter((f) => f.endsWith(".
 for (const f of helpers) {
   const src = read(`scripts/${f}`);
   if (!MUTATES.test(src)) continue;
-  check(`A5 scripts/${f} writes, so it imports the protected-branch guard`, /from "\.\/work-branch"/.test(src) && /(assertWritable|guardWrite)\(/.test(src));
+  check(`A5 scripts/${f} writes, so it imports the protected-branch guard`, /from "\.\/work-branch\.ts"/.test(src) && /(assertWritable|guardWrite)\(/.test(src));
 }
 check("A5 verify-artifacts refuses to complete a stage on a protected branch", /branchState\(repoRoot\)/.test(read("scripts/verify-artifacts.ts")) && /EXIT_PROTECTED/.test(read("scripts/verify-artifacts.ts")));
 check("A5 the guard has no bypass (no env/flag override)", !/process\.env\.[A-Z_]*(ALLOW|BYPASS|FORCE|SKIP)/.test(read("scripts/work-branch.ts")) && !/--force|--allow-protected/.test(read("scripts/work-branch.ts")));

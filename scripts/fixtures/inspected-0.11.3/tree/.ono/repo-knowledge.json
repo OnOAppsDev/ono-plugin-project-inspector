@@ -1,0 +1,452 @@
+{
+  "repoKnowledgeSchemaVersion": 1,
+  "producedBy": {
+    "plugin": "ono-project-inspector",
+    "version": "0.11.3"
+  },
+  "generatedAt": "2026-11-24T09:31:11.598Z",
+  "fingerprint": {
+    "gitHead": "d7335feb9de91547775e044197e9b80644189fd5",
+    "knowledgeHead": "d7335feb9de91547775e044197e9b80644189fd5",
+    "artifacts": {
+      "CLAUDE.md": "57eabaacb58a5a7fd537cb7bf5912f52a7b68f661be44084bdf225b47677dbcf",
+      "AUDIT.md": "61bc1770b193efd9b577e2dde3f2b5fa43fe9a0a06d71e731529124ac8fc13c9",
+      "docs/project/overview.md": "b3c7f1a187112b47ec6cb13f0f9e7e11bceba9de3b4249c0e730846d5d939295",
+      "docs/project/components.md": "630f3a5c0ab1bfe06e307921ebe566f1a2a847155011106b5569cb4410b8cfe1",
+      "docs/project/patterns.md": "aaafa09cc9a1f89975cbd4208cdffd8147b85ece0604f2667b456a91f845b4e7",
+      "docs/project/integrations.md": "c9dd5650d6e019b7904e9bea86389a640f39e78f4ef87b638a2d6864a0bedecb",
+      "docs/project/capabilities.md": "136ba5b90657f37ea1d403153b2c1d1a8b5f632d9633dc4a996a7c5c452f50f3"
+    }
+  },
+  "coverage": {
+    "stack": "populated",
+    "commands": "unknown",
+    "structure": "populated",
+    "inventory": "populated",
+    "conventions": "populated",
+    "integrations": "populated",
+    "auditTopics": "populated",
+    "surfaces": "populated",
+    "capabilities": "populated"
+  },
+  "stack": {
+    "languages": [
+      "TypeScript"
+    ],
+    "frameworks": [
+      "React"
+    ],
+    "platformHints": [
+      "React web",
+      "Tizen"
+    ],
+    "runtimeTooling": [
+      "Node"
+    ],
+    "packageManagers": [
+      "npm"
+    ]
+  },
+  "commands": {
+    "install": null,
+    "run": null,
+    "test": null,
+    "build": null
+  },
+  "structure": {
+    "repositoryTree": "CLAUDE.md#repository-structure",
+    "keyModules": "CLAUDE.md#key-modules",
+    "entryPoints": "CLAUDE.md#entry-points",
+    "surfaces": "CLAUDE.md#targets-and-surfaces"
+  },
+  "documents": {
+    "claudeMd": {
+      "path": "CLAUDE.md",
+      "exists": true,
+      "anchors": [],
+      "surfaceAnchors": {}
+    },
+    "auditMd": {
+      "path": "AUDIT.md",
+      "exists": true,
+      "anchors": [],
+      "surfaceAnchors": {}
+    },
+    "overview": {
+      "path": "docs/project/overview.md",
+      "exists": true,
+      "anchors": [
+        "#what-this-project-is"
+      ],
+      "surfaceAnchors": {}
+    },
+    "inventory": {
+      "path": "docs/project/components.md",
+      "exists": true,
+      "anchors": [
+        "#screens",
+        "#reusable-ui-components",
+        "#shared-hooks-utilities",
+        "#navigation-map"
+      ],
+      "surfaceAnchors": {}
+    },
+    "conventions": {
+      "path": "docs/project/patterns.md",
+      "exists": true,
+      "anchors": [
+        "#state-management",
+        "#data-fetching-api-conventions",
+        "#navigation-patterns",
+        "#testing-patterns",
+        "#architecture-and-composition",
+        "#input-and-interaction",
+        "#input-and-interaction-tizen",
+        "#app-lifecycle-and-state",
+        "#media-and-playback",
+        "#platform-adapters",
+        "#accessibility",
+        "#performance-constraints",
+        "#unknowns"
+      ],
+      "surfaceAnchors": {
+        "tizen": [
+          {
+            "section": "#input-and-interaction",
+            "anchor": "#input-and-interaction-tizen"
+          }
+        ]
+      }
+    },
+    "integrations": {
+      "path": "docs/project/integrations.md",
+      "exists": true,
+      "anchors": [
+        "#backend-services-apis",
+        "#third-party-sdks"
+      ],
+      "surfaceAnchors": {}
+    },
+    "capabilities": {
+      "path": "docs/project/capabilities.md",
+      "exists": true,
+      "anchors": [
+        "#how-to-use-this-file",
+        "#capabilities",
+        "#capability-epg",
+        "#capability-channels",
+        "#capability-player",
+        "#capability-search",
+        "#capability-search-history",
+        "#relationships",
+        "#unknowns"
+      ],
+      "surfaceAnchors": {}
+    }
+  },
+  "auditTopics": [
+    {
+      "topic": "Architecture",
+      "slug": "architecture",
+      "status": "Approved",
+      "file": "audits/architecture/architecture-audit.md"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "web",
+      "platform": "React web",
+      "formFactor": "desktop",
+      "buildSelector": "vite build",
+      "sourceRoots": [
+        "src/"
+      ],
+      "sharedWith": [
+        "tizen"
+      ],
+      "packaging": "static bundle",
+      "minimumRuntime": null,
+      "evidence": [
+        "vite.config.ts"
+      ]
+    },
+    {
+      "id": "tizen",
+      "platform": "Samsung Tizen (React)",
+      "formFactor": "tv",
+      "buildSelector": "tizen package",
+      "sourceRoots": [
+        "src/tv/",
+        "tizen/"
+      ],
+      "sharedWith": [
+        "web"
+      ],
+      "packaging": ".wgt widget",
+      "minimumRuntime": "Tizen 6.0",
+      "evidence": [
+        "tizen/config.xml::required_version=\"6.0\""
+      ]
+    }
+  ],
+  "sharedCode": [
+    {
+      "root": "src/components/",
+      "sharedBy": [
+        "tizen",
+        "web"
+      ],
+      "mechanism": "single bundle import",
+      "evidence": [
+        "src/features/epg/EpgScreen.tsx::ChannelTile"
+      ]
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "channels",
+      "name": "Channels",
+      "anchor": "docs/project/capabilities.md#capability-channels",
+      "surfaceScope": "all",
+      "surfaces": [
+        "tizen",
+        "web"
+      ],
+      "sourceRoots": [
+        {
+          "path": "src/features/channels/",
+          "surface": null
+        }
+      ],
+      "entryPoints": [],
+      "components": [
+        {
+          "name": "ChannelsScreen",
+          "anchor": "docs/project/components.md#screens"
+        },
+        {
+          "name": "ChannelTile",
+          "anchor": "docs/project/components.md#reusable-ui-components"
+        }
+      ],
+      "services": [
+        "src/services/CatalogService.ts::CatalogService"
+      ],
+      "routes": [],
+      "dataDependencies": [
+        {
+          "name": "Catalog API",
+          "anchor": "docs/project/integrations.md#backend-services-apis"
+        }
+      ],
+      "stateOwnership": [],
+      "tests": [],
+      "evidence": [
+        "src/features/channels/ChannelsScreen.tsx::ChannelsScreen"
+      ],
+      "relationships": [
+        "channels:related_to:search",
+        "channels:shares_component_with:epg",
+        "channels:shares_state_with:epg"
+      ]
+    },
+    {
+      "id": "epg",
+      "name": "EPG",
+      "anchor": "docs/project/capabilities.md#capability-epg",
+      "surfaceScope": "all",
+      "surfaces": [
+        "tizen",
+        "web"
+      ],
+      "sourceRoots": [
+        {
+          "path": "src/features/epg/",
+          "surface": null
+        }
+      ],
+      "entryPoints": [
+        "src/features/epg/EpgScreen.tsx::EpgScreen"
+      ],
+      "components": [
+        {
+          "name": "ChannelTile",
+          "anchor": "docs/project/components.md#reusable-ui-components"
+        },
+        {
+          "name": "EpgScreen",
+          "anchor": "docs/project/components.md#screens"
+        }
+      ],
+      "services": [],
+      "routes": [
+        "src/features/epg/EpgScreen.tsx::navigate(\"Player\")"
+      ],
+      "dataDependencies": [],
+      "stateOwnership": [
+        "src/store/guideStore.ts::useGuideStore"
+      ],
+      "tests": [
+        "src/features/epg/__tests__/"
+      ],
+      "evidence": [
+        "src/features/epg/EpgScreen.tsx::EpgScreen"
+      ],
+      "relationships": [
+        "channels:shares_component_with:epg",
+        "channels:shares_state_with:epg",
+        "epg:navigates_to:player"
+      ]
+    },
+    {
+      "id": "player",
+      "name": "Player",
+      "anchor": "docs/project/capabilities.md#capability-player",
+      "surfaceScope": "all",
+      "surfaces": [
+        "tizen",
+        "web"
+      ],
+      "sourceRoots": [
+        {
+          "path": "src/features/player/",
+          "surface": null
+        },
+        {
+          "path": "src/tv/player/",
+          "surface": "tizen"
+        }
+      ],
+      "entryPoints": [],
+      "components": [
+        {
+          "name": "PlayerScreen",
+          "anchor": "docs/project/components.md#screens"
+        }
+      ],
+      "services": [
+        "src/services/PlaybackService.ts::PlaybackService"
+      ],
+      "routes": [],
+      "dataDependencies": [],
+      "stateOwnership": [],
+      "tests": [],
+      "evidence": [
+        "src/features/player/PlayerScreen.tsx::PlayerScreen"
+      ],
+      "relationships": [
+        "epg:navigates_to:player"
+      ]
+    },
+    {
+      "id": "search",
+      "name": "Search",
+      "anchor": "docs/project/capabilities.md#capability-search",
+      "surfaceScope": "subset",
+      "surfaces": [
+        "web"
+      ],
+      "sourceRoots": [
+        {
+          "path": "src/features/search/",
+          "surface": null
+        }
+      ],
+      "entryPoints": [],
+      "components": [],
+      "services": [
+        "src/services/CatalogService.ts::CatalogService"
+      ],
+      "routes": [],
+      "dataDependencies": [
+        {
+          "name": "Catalog API",
+          "anchor": "docs/project/integrations.md#backend-services-apis"
+        }
+      ],
+      "stateOwnership": [],
+      "tests": [],
+      "evidence": [
+        "src/features/search/SearchScreen.tsx::SearchScreen"
+      ],
+      "relationships": [
+        "channels:related_to:search"
+      ]
+    },
+    {
+      "id": "search-history",
+      "name": "Search History",
+      "anchor": "docs/project/capabilities.md#capability-search-history",
+      "surfaceScope": "subset",
+      "surfaces": [
+        "web"
+      ],
+      "sourceRoots": [
+        {
+          "path": "src/features/search-history/",
+          "surface": null
+        }
+      ],
+      "entryPoints": [],
+      "components": [],
+      "services": [],
+      "routes": [],
+      "dataDependencies": [],
+      "stateOwnership": [],
+      "tests": [],
+      "evidence": [
+        "src/features/search-history/SearchHistoryScreen.tsx::SearchHistoryScreen"
+      ],
+      "relationships": []
+    }
+  ],
+  "capabilityRelationships": [
+    {
+      "id": "channels:related_to:search",
+      "from": "channels",
+      "type": "related_to",
+      "to": "search",
+      "evidenceKind": "shared-service",
+      "evidence": [
+        "src/features/channels/ChannelsScreen.tsx::CatalogService",
+        "src/features/search/SearchScreen.tsx::CatalogService"
+      ],
+      "anchor": "docs/project/capabilities.md#relationships"
+    },
+    {
+      "id": "channels:shares_component_with:epg",
+      "from": "channels",
+      "type": "shares_component_with",
+      "to": "epg",
+      "evidenceKind": "shared-component",
+      "evidence": [
+        "src/features/channels/ChannelsScreen.tsx::ChannelTile",
+        "src/features/epg/EpgScreen.tsx::ChannelTile"
+      ],
+      "anchor": "docs/project/capabilities.md#relationships"
+    },
+    {
+      "id": "channels:shares_state_with:epg",
+      "from": "channels",
+      "type": "shares_state_with",
+      "to": "epg",
+      "evidenceKind": "shared-state",
+      "evidence": [
+        "src/features/channels/ChannelsScreen.tsx::useGuideStore",
+        "src/features/epg/EpgScreen.tsx::useGuideStore"
+      ],
+      "anchor": "docs/project/capabilities.md#relationships"
+    },
+    {
+      "id": "epg:navigates_to:player",
+      "from": "epg",
+      "type": "navigates_to",
+      "to": "player",
+      "evidenceKind": "navigation-route",
+      "evidence": [
+        "src/features/epg/EpgScreen.tsx::navigate(\"Player\")"
+      ],
+      "anchor": "docs/project/capabilities.md#relationships"
+    }
+  ]
+}

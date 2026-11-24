@@ -23,7 +23,7 @@
  *   plugin owns `state.json` and `repo-knowledge.json` within it.
  *
  * Usage:
- *   bun scripts/repo-knowledge.ts <emit|validate|show> <repo-root>
+ *   node --no-warnings scripts/repo-knowledge.ts <emit|validate|show> <repo-root>
  *
  * Exit codes:
  *   0 - success
@@ -36,8 +36,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from
 import { createHash } from "crypto";
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
-import { slugify } from "./slugify";
-import { assertWritable, guardWrite } from "./work-branch";
+import { slugify } from "./slugify.ts";
+import { assertWritable, guardWrite } from "./work-branch.ts";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 import {
   CAPABILITIES_DOC,
   EVIDENCE_KINDS,
@@ -49,7 +50,7 @@ import {
   parseInventory,
   parseSurfaceModel,
   surfaceAnchors,
-} from "./knowledge-model";
+} from "./knowledge-model.ts";
 
 // Re-exported: the anchor rule lives in knowledge-model.ts so every helper shares it.
 export { headingAnchors };
@@ -222,7 +223,7 @@ function gitHead(repoRoot: string): string | null {
 /** Current plugin identity, read from the plugin's own manifest (portable, relative to this script). */
 function currentPlugin(): { plugin: string; version: string } {
   try {
-    const m = JSON.parse(readFileSync(join(__dirname, "..", ".claude-plugin", "plugin.json"), "utf-8"));
+    const m = JSON.parse(readFileSync(join(import.meta.dirname, "..", ".claude-plugin", "plugin.json"), "utf-8"));
     return { plugin: m.name ?? "ono-project-inspector", version: m.version ?? "0.0.0" };
   } catch {
     return { plugin: "ono-project-inspector", version: "0.0.0" };
@@ -735,6 +736,7 @@ function main(): void {
   }
 }
 
-if (require.main === module) {
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
   main();
 }

@@ -1,11 +1,11 @@
 /**
- * live-smoke.ts — REAL Claude Code smoke test for the Inspector (0.11.2).
+ * live-smoke.ts — REAL Claude Code smoke test for the Inspector (0.11.2; Node.js since 0.12.0).
  *
  * Not part of the regular suite (it is not a *.test.ts file): it drives a real,
  * logged-in `claude` CLI, uses model credits, and takes several minutes. Run it
  * before a release:
  *
- *   bun scripts/live-smoke.ts [--keep]
+ *   node --no-warnings scripts/live-smoke.ts [--keep]
  *
  * What it does — exactly what a developer does, one CLI turn per developer message:
  *   1. Builds a throwaway repository whose application lives in a NESTED project
@@ -17,7 +17,7 @@
  *      Turn 3  `/ono-project-inspector:inspect-approve <project>` -> project-docs
  *
  * What it asserts (from the stream-json transcript and the disk):
- *   - the project-inspector SUBAGENT runs the Bun preflight and every helper by
+ *   - the project-inspector SUBAGENT runs the Node.js preflight and every helper by
  *     absolute plugin path (so ${CLAUDE_PLUGIN_ROOT} was substituted) and writes
  *     the artifacts itself;
  *   - the MAIN session never writes, edits, or runs a helper (no manual
@@ -25,7 +25,7 @@
  *   - every artifact, capabilities.md included, lands at the Project Root and
  *     none at the Git Root; the evidence gate and manifest validation pass.
  *
- * Bash is limited to the plugin's read-only shell policy plus bun/sh.
+ * Bash is limited to the plugin's read-only shell policy plus node/sh.
  */
 
 import { execFileSync, spawnSync } from "child_process";
@@ -33,13 +33,21 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { APP_SOURCE, commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures";
+import { APP_SOURCE, commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures.ts";
+import { isEntryPoint } from "./entrypoint.ts";
 
-const PLUGIN_ROOT = realpathSync(join(typeof __dirname !== "undefined" ? __dirname : ".", ".."));
+// This file starts a real, paid Claude Code session at load time. Importing it (a module
+// load check, a test runner sweeping scripts/) must never do that: only an explicit
+// `node --no-warnings scripts/live-smoke.ts` runs it.
+if (!isEntryPoint(import.meta.url)) {
+  throw new Error("live-smoke.ts is an on-demand CLI (a paid live Claude Code run); run it directly, never import it.");
+}
+
+const PLUGIN_ROOT = realpathSync(join(import.meta.dirname, ".."));
 const KEEP = process.argv.includes("--keep");
 const ALLOWED = [
   "Read", "Write", "Edit", "Glob", "Grep", "Skill", "Agent", "SendMessage",
-  "Bash(bun:*)", "Bash(sh:*)", "Bash(ls:*)", "Bash(find:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
+  "Bash(node:*)", "Bash(sh:*)", "Bash(ls:*)", "Bash(find:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
   "Bash(grep:*)", "Bash(rg:*)", "Bash(wc:*)", "Bash(tree:*)", "Bash(file:*)", "Bash(pwd)",
   "Bash(git status:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)", "Bash(git rev-parse:*)",
 ];
@@ -127,16 +135,16 @@ try {
   const pluginCall = (script: string) => subBash.some((cmd) => cmd.includes(`${PLUGIN_ROOT}/scripts/${script}`));
 
   check("L1 the main session delegated to the project-inspector agent", main.some((c) => c.name === "Agent" && String(c.input.subagent_type).includes("project-inspector")));
-  check("L2 subagent ran the Bun preflight by absolute plugin path", pluginCall("check-bun.sh"));
+  check("L2 subagent ran the Node.js preflight by absolute plugin path", pluginCall("node-preflight.mjs"));
   for (const s of ["resolve-repo-root.ts", "inspection-state.ts", "verify-artifacts.ts", "knowledge-evidence.ts", "repo-knowledge.ts"]) {
     check(`L3 subagent ran ${s} by absolute plugin path`, pluginCall(s));
   }
   check("L4 no helper call used an unsubstituted variable or a relative path",
-    !all.some((c) => c.name === "Bash" && /\$\{?CLAUDE_PLUGIN_ROOT|<PLUGIN_ROOT>|(^|\s)bun scripts\//.test(String(c.input.command))));
+    !all.some((c) => c.name === "Bash" && /\$\{?CLAUDE_PLUGIN_ROOT|<PLUGIN_ROOT>|(^|\s)node (--no-warnings )?scripts\//.test(String(c.input.command))));
   check("L5 subagent wrote the artifacts itself",
     ["CLAUDE.md", "AUDIT.md", "docs/project/capabilities.md"].every((f) => sub.some((c) => (c.name === "Write" || c.name === "Edit") && c.input.file_path === join(project, f) && !c.error)));
   check("L6 main session never wrote, edited, or ran a helper",
-    !main.some((c) => c.name === "Write" || c.name === "Edit" || (c.name === "Bash" && /\bbun\b|check-bun/.test(String(c.input.command)))),
+    !main.some((c) => c.name === "Write" || c.name === "Edit" || (c.name === "Bash" && /scripts\/[a-z-]+\.(ts|mjs)/.test(String(c.input.command)))),
     main.map((c) => `${c.name}:${String(c.input.command ?? c.input.file_path ?? "")}`).join(" | "));
   check("L7 no tool was unavailable to the subagent", !sub.some((c) => c.error && /No such tool|not available/i.test(JSON.stringify(c.input))));
 
@@ -144,10 +152,10 @@ try {
     "docs/project/overview.md", "docs/project/components.md", "docs/project/patterns.md", "docs/project/integrations.md", "docs/project/capabilities.md"];
   check("L8 every artifact at the Project Root", artifacts.every((f) => existsSync(join(project, f))), artifacts.filter((f) => !existsSync(join(project, f))).join(","));
   check("L9 no Inspector artifact at the Git Root", ["CLAUDE.md", "AUDIT.md", ".ono", "docs"].every((f) => !existsSync(join(gitRoot, f))));
-  const bun = process.execPath;
-  const ev = spawnSync(bun, [join(PLUGIN_ROOT, "scripts", "knowledge-evidence.ts"), "verify", project, "all"], { encoding: "utf-8" });
+  const node = process.execPath;
+  const ev = spawnSync(node, ["--no-warnings", join(PLUGIN_ROOT, "scripts", "knowledge-evidence.ts"), "verify", project, "all"], { encoding: "utf-8" });
   check("L10 evidence gate passes on the generated knowledge", ev.status === 0, ev.stdout);
-  const val = spawnSync(bun, [join(PLUGIN_ROOT, "scripts", "repo-knowledge.ts"), "validate", project], { encoding: "utf-8" });
+  const val = spawnSync(node, ["--no-warnings", join(PLUGIN_ROOT, "scripts", "repo-knowledge.ts"), "validate", project], { encoding: "utf-8" });
   check("L11 manifest validates", val.status === 0, val.stdout + val.stderr);
   const manifest = existsSync(join(project, ".ono", "repo-knowledge.json")) ? JSON.parse(readFileSync(join(project, ".ono", "repo-knowledge.json"), "utf-8")) : {};
   check("L12 capabilities indexed", manifest.coverage?.capabilities === "populated" && (manifest.capabilities ?? []).length > 0, JSON.stringify(manifest.coverage));

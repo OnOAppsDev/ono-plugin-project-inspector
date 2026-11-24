@@ -19,9 +19,9 @@
  * reset or deleted.
  *
  * Usage:
- *   bun scripts/work-branch.ts check  <TARGET_ROOT> [name]   read-only state + suggestion
- *   bun scripts/work-branch.ts assert <TARGET_ROOT>          exit 0 if writable, 5 if protected
- *   bun scripts/work-branch.ts create <TARGET_ROOT> <name>   create + switch (after approval)
+ *   node --no-warnings scripts/work-branch.ts check  <TARGET_ROOT> [name]   read-only state + suggestion
+ *   node --no-warnings scripts/work-branch.ts assert <TARGET_ROOT>          exit 0 if writable, 5 if protected
+ *   node --no-warnings scripts/work-branch.ts create <TARGET_ROOT> <name>   create + switch (after approval)
  *
  * Exit codes:
  *   0 - ok (check always 0; assert writable; create succeeded)
@@ -35,13 +35,14 @@
 import { execFileSync, spawnSync } from "child_process";
 import { existsSync, realpathSync, statSync } from "fs";
 import { dirname, join, sep } from "path";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 export const PROTECTED_BRANCHES = ["main", "master"] as const;
 export const DEFAULT_WORK_BRANCH = "chore/project-inspection";
 /** Exit code every Inspector helper uses when it refuses to write on a protected branch. */
 export const EXIT_PROTECTED = 5;
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const SELF = join(HERE, "work-branch.ts");
 
 function git(cwd: string, args: string[]): string | null {
@@ -99,8 +100,12 @@ export function branchState(dir: string): BranchState {
 }
 
 export class ProtectedBranchError extends Error {
-  constructor(public state: BranchState, public action: string) {
+  readonly state: BranchState;
+  readonly action: string;
+  constructor(state: BranchState, action: string) {
     super(refusalMessage(state, action));
+    this.state = state;
+    this.action = action;
     this.name = "ProtectedBranchError";
   }
 }
@@ -117,8 +122,8 @@ export function refusalMessage(state: BranchState, action: string): string {
     `REFUSED: ${action} would write Inspector output while ${where} is on ${describe(state)}.`,
     `Inspection results are never written to main, master, or a detached HEAD. Nothing was written.`,
     `Create a local working branch from the current checkout first (one developer approval), then re-run:`,
-    `  bun "${SELF}" check <TARGET_ROOT>`,
-    `  bun "${SELF}" create <TARGET_ROOT> <branch-name>    (suggested: ${DEFAULT_WORK_BRANCH})`,
+    `  node --no-warnings "${SELF}" check "<TARGET_ROOT>"`,
+    `  node --no-warnings "${SELF}" create "<TARGET_ROOT>" "<branch-name>"    (suggested: ${DEFAULT_WORK_BRANCH})`,
   ].join("\n");
 }
 
@@ -320,4 +325,7 @@ function main(): void {
   return cmdCreate(dir, name!);
 }
 
-if (import.meta.main) main();
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
+  main();
+}

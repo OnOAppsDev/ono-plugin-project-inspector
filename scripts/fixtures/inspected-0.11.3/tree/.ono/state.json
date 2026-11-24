@@ -1,0 +1,75 @@
+{
+  "stateSchemaVersion": 1,
+  "plugin": {
+    "name": "ono-project-inspector",
+    "version": "0.11.3"
+  },
+  "repository": {
+    "gitRemote": null,
+    "gitHead": null,
+    "knowledgeHead": "d7335feb9de91547775e044197e9b80644189fd5"
+  },
+  "createdAt": "2026-11-24T09:31:10.710Z",
+  "updatedAt": "2026-11-24T09:31:11.543Z",
+  "inspection": {
+    "started": true,
+    "completedStages": [
+      "project-analysis",
+      "project-docs",
+      "audit-breakdown",
+      "audit-approve"
+    ],
+    "currentStage": null,
+    "stage3Complete": true
+  },
+  "stages": {
+    "project-analysis": {
+      "status": "complete",
+      "completedAt": "2026-11-24T09:31:10.711Z",
+      "knowledgeHead": "d7335feb9de91547775e044197e9b80644189fd5",
+      "knowledgeRegeneratedAt": "2026-11-24T09:31:10.854Z"
+    },
+    "project-docs": {
+      "status": "complete",
+      "completedAt": "2026-11-24T09:31:11.138Z",
+      "knowledgeHead": "d7335feb9de91547775e044197e9b80644189fd5",
+      "knowledgeRegeneratedAt": "2026-11-24T09:31:11.138Z"
+    },
+    "audit-breakdown": {
+      "status": "complete",
+      "completedAt": "2026-11-24T09:31:11.508Z"
+    },
+    "audit-approve": {
+      "status": "complete",
+      "completedAt": "2026-11-24T09:31:11.508Z"
+    }
+  },
+  "topics": [
+    {
+      "index": "1",
+      "topic": "Architecture",
+      "slug": "architecture",
+      "status": "Approved",
+      "file": "audits/architecture/architecture-audit.md",
+      "draftedAt": "2026-11-24T09:31:11.508Z",
+      "approvedAt": "2026-11-24T09:31:11.508Z"
+    }
+  ],
+  "counts": {
+    "pendingBreakdown": 0,
+    "draft": 0,
+    "approved": 1,
+    "total": 1
+  },
+  "resume": {
+    "nextAction": "stage3-complete",
+    "topic": null,
+    "hint": "All inspection stages complete. /inspect-sync is available for optional maintenance."
+  },
+  "maintenance": {
+    "lastSyncAt": null
+  },
+  "migrations": {
+    "history": []
+  }
+}

@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.12.0 — 2026-11-24
+
+Node.js runtime. The Inspector no longer needs Bun: every helper runs on Node.js 22.18+ (Node 22) or 24+, the same version policy as the Ono Mobile Dev Plugin. Developers who already have a supported Node.js — anyone the Dev Plugin works for — install nothing. This fixes Refresh Project Knowledge stopping at step 0 with `BUN NOT FOUND` on machines without Bun (reported on Windows 11 / Git Bash, where installing software is not permitted).
+
+- **Node.js only.** Helpers run as `node --no-warnings "<plugin>/scripts/<name>.ts"` using Node's built-in type stripping. There is no Bun fallback, no second runtime, no npm install, no dependency, and no `npx`/`tsx`/`ts-node`. The Inspector stays independently installable: nothing is loaded from the Dev Plugin.
+- **Node.js preflight (new, replaces the Bun preflight).** `scripts/node-preflight.mjs` is step 0 of every mode. It prints one JSON line — `{supported, version, execPath, required, message}` — and exits 0 when the Node.js is supported, 1 when not. On a missing or unsupported Node.js the workflow stops before writing anything and shows the message. `scripts/check-bun.sh` and its tests are removed, together with all Bun installation guidance.
+- **Compatibility fixes for Node.js** (no behavior change):
+  - explicit `.ts` import extensions and `import type` for type-only imports;
+  - a Node-compatible entry-point check (`scripts/entrypoint.ts`, comparing the real paths of `process.argv[1]` and the module). `import.meta.main` and `require.main` made several helpers exit 0 **without doing anything** under Node.js — including the write guard;
+  - `import.meta.dirname` instead of `__dirname`;
+  - no TypeScript parameter properties;
+  - `scripts/package.json` (`"type": "module"`) so the helpers load as ES modules wherever the plugin is installed;
+  - complete output before `process.exit()`: under Node.js a large result written to a pipe was cut off at 64 KiB (Bun did not do this), so a helper running as a CLI now writes its output synchronously.
+- **Write guard: explicit authorization (safety).** An Inspector `Write`/`Edit`/`MultiEdit`/`NotebookEdit` is allowed only when `write-guard.ts` exits 0 **and** prints exactly `ONO-INSPECTOR-WRITE-GUARD:ALLOW` plus one newline. Exit 0 alone never authorizes a write. Everything else is denied (exit 2):
+  - Node.js missing, unsupported (including Node 23, which can parse the helper — the guard applies the preflight's version rule itself), or unable to start;
+  - the helper missing, failing to load or parse, or exiting silently;
+  - any other, extra or malformed output — including the token with different whitespace or line endings, or the token on stderr;
+  - invalid hook input or a crash.
+
+  The protected-branch decision rules, the hook registration and the main-session fast path (no Node.js started for the developer's own edits) are unchanged.
+- **Windows (Git Bash) and paths.**
+  - Every helper command in the agent, hook and skill instructions quotes its plugin and repository paths (`"<TARGET_ROOT>"`), so spaces, Unicode and Windows backslash paths survive the shell, and the agent is told never to rewrite `TARGET_ROOT` into another form.
+  - The hook finds its helper from its own path, without `cd`/`pwd`, so a Windows plugin path reaches `node.exe` unchanged and nothing relies on MSYS path conversion.
+  - The entry-point check is case-insensitive on Windows (drive letters).
+  - New `.gitattributes`: every text file of the plugin is checked out with LF endings, so a `core.autocrlf=true` checkout or install cannot break the shell scripts.
+- **Existing inspections continue.** Repositories inspected with 0.11.x are recognised as inspected, with knowledge COMPLETE and no migration — no re-inspection. Like any version change, the startup reports that the state was written by 0.11.x; the next write records 0.12.0. The state (v1) and manifest (v1) schemas are unchanged, and the Node.js helpers reproduce 0.11.3's (Bun) output on the same repository apart from timestamps, the producing plugin version and the commit the manifest was generated at.
+- **Tests.**
+  - New `scripts/check.ts --strict` runs every suite; any skipped assertion fails the run.
+  - New `.github/workflows/check.yml` runs it for this plugin on Ubuntu, macOS and Windows (Git Bash) with Node 22.18.0 and Node 24, with Bun removed from `PATH`. Read-only permissions, no secrets. The Inspector itself still uses only local Git: no GitHub CLI, API or credentials, so it works the same with Bitbucket.
+  - New suites:
+    - `node-preflight` — the version rule and the CLI contract;
+    - `entrypoint` — every helper runs, and is not silent, by absolute and relative path, through a symlinked install, from a path with spaces and Unicode, with a lower-case drive letter on Windows, and with Bun unavailable; importing a helper runs nothing; a 2 MiB result survives a pipe;
+    - `compat-0.11` — a repository really inspected by 0.11.3 under Bun (`scripts/fixtures/inspected-0.11.3`), continued, refreshed and compared under Node.js.
+  - `write-guard`:
+    - G10 reproduces the exact silent fail-open defect (an `import.meta.main` helper run by the real Node.js exits 0 with no output) and proves the hook denies it, plus 14 malformed-output cases;
+    - G7 covers missing, broken, old and unsupported Node.js;
+    - G11 covers install paths with spaces and Unicode, symlinked installs and relative invocation.
+  - The test helpers are portable: `fixtures/platform.ts` replaces `/bin/sh`, `:`-joined PATHs and symlinked tool directories. `work-branch` W7 also fails Git with a ref lock, which works on Windows, where directory permissions do not.
+  - `live-smoke.ts` now refuses to start when imported, so no module sweep can launch a paid session.
+- **Known issue (Windows, not changed here).** If Git converts the Inspector's committed Markdown artifacts (`CLAUDE.md`, `docs/project/*.md`) to CRLF on checkout (`core.autocrlf=true`), the knowledge parsers do not recognise their tables and sections, and the evidence gate fails. 0.11.3 behaves the same; it does not depend on the runtime. Workaround: check those files out with LF endings, for example with a `.gitattributes` entry in the inspected repository.
+- **Not verified yet.** These run in CI or in a live session, not on the release machine:
+  - Node.js 22.18.0;
+  - Windows;
+  - a live Claude Code session on 0.12.0.
+
 ## 0.11.3 — 2026-11-16
 
 Protected-branch workflow. The Inspector may read and analyze any branch, but it never writes inspection results to `main`, `master`, or a detached HEAD. It uses local Git only, so it behaves the same with any Git host.

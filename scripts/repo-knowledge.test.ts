@@ -6,7 +6,7 @@
  * files and exercises the CLI end-to-end (stdout JSON + exit code).
  *
  * No external test framework. Run with:
- *   bun scripts/repo-knowledge.test.ts
+ *   node --no-warnings scripts/repo-knowledge.test.ts
  */
 
 import { execFileSync } from "child_process";
@@ -23,9 +23,9 @@ import {
   APP_CAPABILITIES,
   APP_RELATIONSHIPS,
   REL_NAVIGATES,
-} from "./fixtures/knowledge-fixtures";
+} from "./fixtures/knowledge-fixtures.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const HELPER = join(HERE, "repo-knowledge.ts");
 const RUNTIME = process.execPath;
 
@@ -37,7 +37,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 
 function run(args: string[]): { code: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(RUNTIME, [HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = execFileSync(RUNTIME, ["--no-warnings", HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
     return { code: 0, stdout, stderr: "" };
   } catch (err: any) {
     return { code: typeof err.status === "number" ? err.status : 1, stdout: err.stdout?.toString() ?? "", stderr: err.stderr?.toString() ?? "" };
@@ -416,7 +416,7 @@ Just prose, no structure headings at all.
     // Both source-backed stages regenerated knowledge at H1 (recorded through inspection-state).
     const h1 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: kh, encoding: "utf-8" }).trim();
     for (const stage of ["project-analysis", "project-docs"]) {
-      execFileSync(RUNTIME, [join(HERE, "inspection-state.ts"), "record-knowledge", kh, stage], { stdio: "ignore" });
+      execFileSync(RUNTIME, ["--no-warnings", join(HERE, "inspection-state.ts"), "record-knowledge", kh, stage], { stdio: "ignore" });
     }
     run(["emit", kh]);
     const m1 = JSON.parse(readFileSync(p, "utf-8"));

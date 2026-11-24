@@ -6,8 +6,10 @@ This is not an implementation assistant. It never modifies source code, never wr
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh)** on `PATH` — every deterministic helper is a Bun script. Each command checks for it first (`scripts/check-bun.sh`) and, if it is missing, stops before touching any file and prints the install command (`curl -fsSL https://bun.sh/install | bash` on macOS/Linux, `brew install oven-sh/bun/bun`, or `powershell -c "irm bun.sh/install.ps1 | iex"` on Windows). The Inspector never installs Bun and never falls back to another runtime.
+- **Node.js 22.18 or later on Node 22, or Node.js 24 or later**, on the `PATH` Claude Code uses — the same requirement as the Ono Mobile Dev Plugin. Every deterministic helper is a TypeScript file run directly by `node` (built-in type stripping); there is nothing to install: no Bun, no npm packages, no `npx`/`tsx`/`ts-node`. **If you already have a supported Node.js — for example because the Dev Plugin works for you — you do not need to install anything else.** Every command first runs `node "<plugin>/scripts/node-preflight.mjs"`; on a missing or unsupported Node.js (Node 20, Node 22 before 22.18, any Node 23) it stops before touching any file and says which Node.js it found and where. The Node.js inside Claude Code can differ from your terminal's: check it with `! node -v` and `! which node`.
 - **Git** — knowledge freshness is tracked against Git history.
+
+Platforms: macOS and Linux, and Windows 11 with Git Bash (the shell Claude Code uses on Windows) — the helpers and the write guard are written and tested for all three, including paths with spaces and non-Latin characters such as Hebrew; see the CHANGELOG for what has been verified in a live Claude Code session. Known Windows limitation: if Git converts the Inspector's committed Markdown artifacts to CRLF line endings on checkout (`core.autocrlf=true`), the knowledge checks do not recognise them — see CHANGELOG 0.12.0. The Inspector works with any Git host — Bitbucket included — using local Git only: it needs no GitHub account, `gh`, API or credentials.
 
 ## Project Root and Git Root
 
@@ -75,15 +77,26 @@ hooks/                       agent-read checkpoint instructions between stages (
                              the Inspector-agent-scoped write guard (scripts/write-guard.sh / .ts)
 scripts/                     deterministic helpers (slug rules, AUDIT.md consistency, .ono/state.json state and knowledge drift,
                              .ono/repo-knowledge.json manifest, knowledge-refresh preservation guard, generic knowledge-model
-                             parser, source-evidence gate, Project/Git Root resolver, Bun preflight, protected-branch guard
+                             parser, source-evidence gate, Project/Git Root resolver, Node.js preflight, protected-branch guard
                              and working-branch creation) + *.test.ts suites
-                             (fixtures in scripts/fixtures/); live-smoke.ts is the on-demand real Claude Code smoke test
+                             (fixtures in scripts/fixtures/); check.ts runs them all; live-smoke.ts is the on-demand real
+                             Claude Code smoke test
+.github/workflows/check.yml  CI for this plugin only: the strict suite on Ubuntu, macOS and Windows, Node 22.18.0 and 24
 templates/                   reserved for future skills; unused by current skills by design
 docs/repo-knowledge-contract.md   outbound contract consumed by other Ono plugins
                              (architecture and workflow docs live in ono-plugin-marketplace)
 ```
 
 The plugin also maintains a committed, portable state file at `<target-repo>/.ono/state.json` (owned by the internal `inspection-state` skill) so an interrupted inspection resumes exactly where it left off. `AUDIT.md` remains the source of truth; the state file only mirrors it.
+
+## Testing
+
+```
+node scripts/check.ts --strict      # every suite; a skipped assertion fails the run
+node --no-warnings scripts/<name>.test.ts   # one suite
+```
+
+The suites need only Node.js (22.18+ / 24+) and Git — no Bun, no dependencies — and run on macOS, Linux and Windows (Git Bash). CI (`.github/workflows/check.yml`) runs the strict suite on all three with Node 22.18.0 and Node 24, with Bun removed from `PATH`. `scripts/live-smoke.ts` is a separate, paid, real Claude Code run and is never started by the suite.
 
 ## Adding a new inspection skill
 

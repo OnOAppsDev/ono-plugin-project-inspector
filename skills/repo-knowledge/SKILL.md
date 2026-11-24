@@ -47,7 +47,7 @@ It never writes `CLAUDE.md`, `AUDIT.md`, `audits/`, `docs/`, `.ono/state.json`, 
 
 ## The Deterministic Helper
 
-All logic lives in this plugin's `scripts/repo-knowledge.ts`. Run it with Bun, by absolute plugin path: `bun "${CLAUDE_PLUGIN_ROOT}/scripts/repo-knowledge.ts" <command> <repo-root>` — `${CLAUDE_PLUGIN_ROOT}` is the plugin's install directory, not the repository. Bun is required (the orchestrator's preflight checks it); never substitute another runtime. Commands:
+All logic lives in this plugin's `scripts/repo-knowledge.ts`. Run it with Node.js, by absolute plugin path: `node --no-warnings "${CLAUDE_PLUGIN_ROOT}/scripts/repo-knowledge.ts" <command> "<repo-root>"` — `${CLAUDE_PLUGIN_ROOT}` is the plugin's install directory, not the repository. Bun is required (the orchestrator's preflight checks it); never substitute another runtime. Commands:
 
 | Command | Purpose |
 |---------|---------|

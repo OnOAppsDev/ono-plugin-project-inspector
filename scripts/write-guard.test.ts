@@ -1,59 +1,73 @@
 /**
  * write-guard.test.ts
  *
- * Regression tests for the Inspector write guard (0.11.3): the PreToolUse hook
- * in hooks/hooks.json -> scripts/write-guard.sh -> scripts/write-guard.ts.
- * Every case runs the REAL hook command (`sh write-guard.sh`) with synthetic
- * hook input on stdin, as Claude Code does, against throwaway repositories.
+ * Regression tests for the Inspector write guard (0.11.3; Node.js since 0.12.0):
+ * the PreToolUse hook in hooks/hooks.json -> scripts/write-guard.sh ->
+ * scripts/write-guard.ts. Every case runs the REAL hook command (`sh write-guard.sh`)
+ * with synthetic hook input on stdin, as Claude Code does, against throwaway
+ * repositories.
  *
  * The live run that established the agent_type (`ono-project-inspector:project-inspector`
  * for the Inspector subagent, none for the main session) is recorded in CHANGELOG 0.11.3.
  *
+ * 0.12.0 adds the explicit-authorization contract (G10): an Inspector write is allowed
+ * only on exit 0 with stdout exactly ALLOW_RESPONSE + "\n". G10 reproduces the exact
+ * silent fail-open defect found during the Node.js migration investigation — a
+ * write-guard.ts whose entry check is `import.meta.main`, run by the real Node.js,
+ * exits 0 with no output — and proves the hook now denies it. G11 covers install
+ * paths: symlinked plugin directories, relative invocation, spaces and Unicode.
+ *
+ * Portable: macOS, Linux and Windows (Git Bash) — see fixtures/platform.ts. A case
+ * whose OS feature is unavailable prints SKIP (never a silent PASS), and
+ * `node scripts/check.ts --strict` fails on any SKIP.
+ *
  * No external test framework. Run with:
- *   bun scripts/write-guard.test.ts
+ *   node --no-warnings scripts/write-guard.test.ts
  */
 
 import { execFileSync, spawnSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
-import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures";
-import { INSPECTOR_AGENT_TYPES, GUARDED_TOOLS } from "./write-guard";
+import { dirname, join, relative } from "path";
+import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures.ts";
+import { baseShims, childEnv, linkOrJunction, makeShims, pathList, SH, shPath } from "./fixtures/platform.ts";
+import { ALLOW_RESPONSE, INSPECTOR_AGENT_TYPES, GUARDED_TOOLS } from "./write-guard.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const PLUGIN = realpathSync(join(HERE, ".."));
 const HOOK = join(PLUGIN, "scripts", "write-guard.sh");
 const INSPECTOR = "ono-project-inspector:project-inspector";
+const NODE = process.execPath;
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
   if (cond) console.log(`PASS  ${name}`);
   else { failures++; console.log(`FAIL  ${name}${detail ? `  — ${detail}` : ""}`); }
 }
+const skip = (name: string, why: string) => console.log(`SKIP  ${name}  — ${why}`);
 
-const which = (cmd: string) => execFileSync("/bin/sh", ["-c", `command -v ${cmd}`], { encoding: "utf-8" }).trim();
 const root = realpathSync(mkdtempSync(join(tmpdir(), "inspector-guard-")));
 
-// PATHs: the normal one (Bun + system tools), and one with every tool the hook needs except Bun.
-const NORMAL_PATH = `${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`;
-const noBun = join(root, "no-bun-bin");
-mkdirSync(noBun);
-for (const t of ["cat", "grep", "dirname", "git"]) symlinkSync(which(t), join(noBun, t));
-// Bun present but no git: the branch cannot be determined.
-const noGit = join(root, "no-git-bin");
-mkdirSync(noGit);
-for (const t of ["cat", "grep", "dirname"]) symlinkSync(which(t), join(noGit, t));
-symlinkSync(process.execPath, join(noGit, "bun"));
-// A Bun that crashes.
-const crashBin = join(root, "crash-bin");
-mkdirSync(crashBin);
-for (const t of ["cat", "grep", "dirname", "git"]) symlinkSync(which(t), join(crashBin, t));
-writeFileSync(join(crashBin, "bun"), "#!/bin/sh\nexit 1\n");
-chmodSync(join(crashBin, "bun"), 0o755);
+// PATHs. NORMAL: the real Node.js first, then the system tools (including git).
+// Every other PATH is a directory of launcher shims, so each case controls exactly
+// which tools exist. No Bun is on any PATH a case builds, and none is needed.
+const NORMAL_PATH = pathList(dirname(NODE), process.env.PATH ?? "");
+const noNode = baseShims(join(root, "no-node-bin"), { git: true });
+// Node present but no git: the branch cannot be determined.
+const noGit = makeShims(join(root, "no-git-bin"), { node: NODE });
+baseShims(noGit);
+// A PATH whose only `node` is a fake with the given shell body, beside the hook's own tools.
+function fakeNode(name: string, body: string, withSystemPath = false): string {
+  const dir = baseShims(join(root, `node-${name}`));
+  makeShims(dir, { node: { body } });
+  // withSystemPath: the fake node still wins (first on PATH), but git and the rest stay reachable.
+  return withSystemPath ? pathList(dir, process.env.PATH ?? "") : pathList(dir);
+}
+const crashBin = fakeNode("crash", "exit 1");
 
-function hookRaw(stdin: string, path = NORMAL_PATH): { code: number; stderr: string } {
-  const r = spawnSync("/bin/sh", [HOOK], { input: stdin, encoding: "utf-8", env: { PATH: path } });
-  return { code: r.status ?? -1, stderr: r.stderr ?? "" };
+function hookRaw(stdin: string, path = NORMAL_PATH, hookPath = HOOK, cwd?: string): { code: number; stdout: string; stderr: string } {
+  const r = spawnSync(SH, [hookPath], { input: stdin, encoding: "utf-8", env: childEnv(path), cwd });
+  return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 function payload(o: { agent?: string | null; tool?: string; file?: string; notebook?: string; cwd?: string; content?: string }): string {
   const input: Record<string, unknown> = {};
@@ -67,6 +81,8 @@ function payload(o: { agent?: string | null; tool?: string; file?: string; noteb
 }
 const hook = (o: Parameters<typeof payload>[0], path?: string) => hookRaw(payload(o), path);
 const denied = (r: { code: number; stderr: string }) => r.code === 2 && /REFUSED/.test(r.stderr) && /nothing was written/i.test(r.stderr);
+/** An Inspector allow is exit 0; the hook itself prints nothing on stdout either way. */
+const allowed = (r: { code: number; stdout: string }) => r.code === 0 && r.stdout === "";
 
 function repoOn(name: string, branch: string): string {
   const repo = join(root, name);
@@ -93,12 +109,12 @@ try {
       check(`G1 developer ${tool} on ${label} -> allowed`, hook({ tool, ...target(repo, tool) }).code === 0);
     }
   }
-  check("G1 developer edit needs no Bun (fast path)", hook({ tool: "Write", file: join(main, "CLAUDE.md") }, noBun).code === 0);
+  check("G1 developer edit needs no Node.js (fast path)", hook({ tool: "Write", file: join(main, "CLAUDE.md") }, noNode).code === 0);
   check("G1 developer edit is silent", hook({ tool: "Edit", file: join(main, "README.md") }).stderr === "");
   // File content that mentions the Inspector cannot forge the metadata.
   const forged = payload({ tool: "Write", file: join(main, "CLAUDE.md"), content: `{"agent_type":"${INSPECTOR}"}` });
-  check("G1 content quoting the Inspector's agent_type is not identification", hookRaw(forged, noBun).code === 0, forged);
-  check("G1 Inspector artifact paths alone are not identification", hook({ tool: "Write", file: join(main, ".ono", "state.json") }, noBun).code === 0);
+  check("G1 content quoting the Inspector's agent_type is not identification", hookRaw(forged, noNode).code === 0, forged);
+  check("G1 Inspector artifact paths alone are not identification", hook({ tool: "Write", file: join(main, ".ono", "state.json") }, noNode).code === 0);
 
   // --- G2: other agents -----------------------------------------------------------------
   for (const agent of ["Explore", "general-purpose", "ono-mobile-dev-plugin:feature-implementer", "project-inspector", "other-plugin:project-inspector", "ono-project-inspector:other-agent"]) {
@@ -119,13 +135,13 @@ try {
 
   // --- G4: Inspector on a working branch / outside Git -> allowed ------------------------
   for (const tool of GUARDED_TOOLS) {
-    check(`G4 Inspector ${tool} on a working branch -> allowed`, hook({ agent: INSPECTOR, tool, ...target(work, tool) }).code === 0);
+    check(`G4 Inspector ${tool} on a working branch -> allowed`, allowed(hook({ agent: INSPECTOR, tool, ...target(work, tool) })));
   }
   check("G4 Inspector write outside any Git repository -> allowed", hook({ agent: INSPECTOR, tool: "Write", file: join(plain, "notes.md") }).code === 0);
   // The same repository before and after the approved branch is created.
   const flip = repoOn("flip-repo", "main");
   check("G4 before the branch: denied", hook({ agent: INSPECTOR, tool: "Write", file: join(flip, "CLAUDE.md") }).code === 2);
-  execFileSync(process.execPath, [join(PLUGIN, "scripts", "work-branch.ts"), "create", flip, "chore/project-inspection"], { stdio: "ignore" });
+  execFileSync(NODE, ["--no-warnings", join(PLUGIN, "scripts", "work-branch.ts"), "create", flip, "chore/project-inspection"], { stdio: "ignore" });
   check("G4 after work-branch.ts create: allowed", hook({ agent: INSPECTOR, tool: "Write", file: join(flip, "CLAUDE.md") }).code === 0);
 
   // --- G5: nested project roots and nonexistent targets ---------------------------------
@@ -141,27 +157,47 @@ try {
   check("G5 relative target on a working branch -> allowed", hook({ agent: INSPECTOR, tool: "Write", file: "docs/project/overview.md", cwd: proj }).code === 0);
   check("G5 relative target with no cwd -> denied (cannot place it)", hook({ agent: INSPECTOR, tool: "Write", file: "CLAUDE.md" }).code === 2);
 
-  // --- G6: symlinks -------------------------------------------------------------------------
+  // --- G6: symlinks (Windows: directory links fall back to junctions) ------------------------
   // A link in a working-branch repo pointing at a file inside a repo on main: the write lands on main.
-  symlinkSync(join(main, "README.md"), join(work, "linked-readme.md"));
-  check("G6 symlinked file into a repo on main -> denied", hook({ agent: INSPECTOR, tool: "Edit", file: join(work, "linked-readme.md") }).code === 2);
+  if (linkOrJunction(join(main, "README.md"), join(work, "linked-readme.md"), "file")) {
+    check("G6 symlinked file into a repo on main -> denied", hook({ agent: INSPECTOR, tool: "Edit", file: join(work, "linked-readme.md") }).code === 2);
+  } else skip("G6 symlinked file into a repo on main -> denied", "file symlinks are not permitted for this user on this OS");
   // A symlinked directory outside Git pointing into a repo on main.
-  symlinkSync(main, join(plain, "main-link"));
-  check("G6 new file under a symlinked directory into main -> denied", hook({ agent: INSPECTOR, tool: "Write", file: join(plain, "main-link", "docs", "x.md") }).code === 2);
+  if (linkOrJunction(main, join(plain, "main-link"), "dir")) {
+    check("G6 new file under a symlinked directory into main -> denied", hook({ agent: INSPECTOR, tool: "Write", file: join(plain, "main-link", "docs", "x.md") }).code === 2);
+  } else skip("G6 new file under a symlinked directory into main -> denied", "no directory link could be created");
   // A symlink from a repo on main pointing outside Git: the write lands outside any repository.
   mkdirSync(join(root, "outside"));
-  symlinkSync(join(root, "outside"), join(main, "out-link"));
-  check("G6 symlinked directory from main to outside Git -> allowed (write lands outside)", hook({ agent: INSPECTOR, tool: "Write", file: join(main, "out-link", "x.md") }).code === 0);
-  symlinkSync(join(root, "missing-target"), join(work, "dangling.md"));
-  check("G6 dangling symlink target -> denied (cannot place it)", hook({ agent: INSPECTOR, tool: "Write", file: join(work, "dangling.md") }).code === 2);
-  symlinkSync(join(root, "missing-dir"), join(work, "dangling-dir"));
-  check("G6 new file under a dangling directory symlink -> denied", hook({ agent: INSPECTOR, tool: "Write", file: join(work, "dangling-dir", "x.md") }).code === 2);
+  if (linkOrJunction(join(root, "outside"), join(main, "out-link"), "dir")) {
+    check("G6 symlinked directory from main to outside Git -> allowed (write lands outside)", allowed(hook({ agent: INSPECTOR, tool: "Write", file: join(main, "out-link", "x.md") })));
+  } else skip("G6 symlinked directory from main to outside Git -> allowed", "no directory link could be created");
+  if (linkOrJunction(join(root, "missing-target"), join(work, "dangling.md"), "file")) {
+    check("G6 dangling symlink target -> denied (cannot place it)", hook({ agent: INSPECTOR, tool: "Write", file: join(work, "dangling.md") }).code === 2);
+  } else skip("G6 dangling symlink target -> denied", "file symlinks are not permitted for this user on this OS");
+  if (linkOrJunction(join(root, "missing-dir"), join(work, "dangling-dir"), "dir")) {
+    check("G6 new file under a dangling directory symlink -> denied", hook({ agent: INSPECTOR, tool: "Write", file: join(work, "dangling-dir", "x.md") }).code === 2);
+  } else skip("G6 new file under a dangling directory symlink -> denied", "no directory link could be created");
 
-  // --- G7: missing Bun, crashes, unknown branch ----------------------------------------------
-  check("G7 Inspector call with Bun missing -> denied (never fails open)", denied(hook({ agent: INSPECTOR, tool: "Write", file: join(work, "CLAUDE.md") }, noBun)));
-  check("G7 Inspector call with Bun missing explains why", /needs Bun/.test(hook({ agent: INSPECTOR, tool: "Write", file: join(work, "CLAUDE.md") }, noBun).stderr));
-  check("G7 a crashing guard -> denied", denied(hook({ agent: INSPECTOR, tool: "Write", file: join(work, "CLAUDE.md") }, crashBin)));
-  check("G7 git unavailable inside a repository -> branch unknown -> denied", denied(hook({ agent: INSPECTOR, tool: "Write", file: join(work, "CLAUDE.md") }, noGit)));
+  // --- G7: Node.js missing, broken or crashing; unknown branch -------------------------------
+  const onWork = payload({ agent: INSPECTOR, tool: "Write", file: join(work, "CLAUDE.md") });
+  check("G7 control: the same Inspector write on the working branch is allowed with the real Node.js", allowed(hookRaw(onWork)));
+  const missing = hookRaw(onWork, noNode);
+  check("G7 Inspector call with Node.js missing -> denied (never fails open)", denied(missing), JSON.stringify(missing));
+  check("G7 Inspector call with Node.js missing explains why", /needs Node\.js/.test(missing.stderr) && /node is not on PATH/.test(missing.stderr));
+  check("G7 a crashing guard (node exits 1) -> denied", denied(hookRaw(onWork, crashBin)));
+  const cannotStart = hookRaw(onWork, fakeNode("cannot-start", `exec "${shPath(join(root, "no-such-node-binary"))}" "$@"`));
+  check("G7 a node executable that cannot start -> denied", denied(cannotStart), JSON.stringify(cannotStart));
+  const old = hookRaw(onWork, fakeNode("node20", `echo 'TypeError [ERR_UNKNOWN_FILE_EXTENSION]: Unknown file extension ".ts"' >&2; exit 1`));
+  check("G7 an old Node.js that cannot load .ts (Node 20 / 22.17 behavior) -> denied", denied(old), JSON.stringify(old));
+  const parseFail = hookRaw(onWork, fakeNode("parse", `echo 'SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript parameter property is not supported in strip-only mode' >&2; exit 1`));
+  check("G7 a TypeScript parsing failure -> denied", denied(parseFail));
+  // An unsupported Node.js that CAN parse the helpers (Node 23.x): the guard's own version check denies.
+  const fake23 = join(root, "fake-node-23.mjs");
+  writeFileSync(fake23, 'Object.defineProperty(process.versions, "node", { value: "23.11.0" });\n');
+  // git stays reachable, so without the version check this working-branch write WOULD be allowed.
+  const node23 = hookRaw(onWork, fakeNode("node23", `exec "${shPath(NODE)}" --import "${shPath(fake23)}" "$@"`, true));
+  check("G7 an unsupported Node.js that can parse the helper (23.x) -> denied by the version check", denied(node23) && /Unsupported Node\.js v23\.11\.0/.test(node23.stderr), JSON.stringify(node23));
+  check("G7 git unavailable inside a repository -> branch unknown -> denied", denied(hookRaw(onWork, noGit)));
   const broken = join(root, "broken-repo");
   mkdirSync(broken);
   writeFileSync(join(broken, ".git"), "gitdir: /nonexistent/broken\n");
@@ -178,6 +214,97 @@ try {
   check("G8 Inspector call with a non-string path -> denied", denied(hookRaw(JSON.stringify({ agent_type: INSPECTOR, tool_name: "Edit", tool_input: { file_path: 42 } }))));
   check("G8 Inspector call with an unexpected tool -> denied", denied(hookRaw(JSON.stringify({ agent_type: INSPECTOR, tool_name: "Bash", tool_input: { command: "ls" } }))));
   check("G8 whitespace in the JSON still identifies the Inspector", denied(hookRaw(`{ "tool_name": "Write", "agent_type" : "${INSPECTOR}", "tool_input": { "file_path": "${join(main, "CLAUDE.md")}" } }`)));
+
+  // --- G10: explicit authorization (0.12.0) -----------------------------------------------------
+  const shSrc = readFileSync(HOOK, "utf-8");
+  check("G10 the wrapper and the helper use the same ALLOW response", shSrc.includes(`ALLOW_RESPONSE='${ALLOW_RESPONSE}'`), ALLOW_RESPONSE);
+  check("G10 the ALLOW response is a distinctive token, not a common word", /^ONO-INSPECTOR-WRITE-GUARD:ALLOW$/.test(ALLOW_RESPONSE));
+  const onMain = payload({ agent: INSPECTOR, tool: "Write", file: join(main, "CLAUDE.md") });
+  const direct = (stdin: string) => spawnSync(NODE, ["--no-warnings", join(PLUGIN, "scripts", "write-guard.ts")], { input: stdin, encoding: "utf-8", env: childEnv(NORMAL_PATH) });
+  const dAllow = direct(onWork);
+  check("G10 helper allow = exit 0 + exactly the ALLOW line on stdout + nothing on stderr", dAllow.status === 0 && dAllow.stdout === `${ALLOW_RESPONSE}\n` && dAllow.stderr === "", JSON.stringify(dAllow.stdout + dAllow.stderr));
+  const dDeny = direct(onMain);
+  check("G10 helper deny = exit 2 + nothing on stdout + REFUSED on stderr", dDeny.status === 2 && dDeny.stdout === "" && /^REFUSED/.test(dDeny.stderr), JSON.stringify(dDeny));
+  const dBad = direct("{not json");
+  check("G10 helper given invalid hook input = exit 2 + nothing on stdout", dBad.status === 2 && dBad.stdout === "");
+
+  // The exact defect found in the Node.js migration investigation: a write-guard.ts whose entry
+  // check is `import.meta.main`, run by the real Node.js, exits 0 having done nothing.
+  const defect = join(root, "defect-plugin", "scripts");
+  mkdirSync(defect, { recursive: true });
+  for (const f of ["write-guard.sh", "write-guard.ts", "work-branch.ts", "entrypoint.ts", "node-preflight.mjs", "package.json"]) copyFileSync(join(PLUGIN, "scripts", f), join(defect, f));
+  const guardSrc = readFileSync(join(defect, "write-guard.ts"), "utf-8");
+  const ENTRY = "if (isEntryPoint(import.meta.url)) main();";
+  check("G10 the shipped helper uses the argv-based entry check, never import.meta.main", guardSrc.includes(ENTRY) && !/import\.meta\.main/.test(guardSrc.replace(/\/\*[\s\S]*?\*\//g, "")));
+  writeFileSync(join(defect, "write-guard.ts"), guardSrc.replace(ENTRY, "if (import.meta.main) main();"));
+  const defectHook = join(defect, "write-guard.sh");
+  const silentRun = spawnSync(NODE, ["--no-warnings", join(defect, "write-guard.ts")], { input: onMain, encoding: "utf-8" });
+  if (silentRun.status === 0 && silentRun.stdout === "" && silentRun.stderr === "") {
+    check("G10 defect reproduced: the import.meta.main helper exits 0 silently on an Inspector write to main", true);
+  } else {
+    console.log(`INFO  this Node.js (${process.version}) runs import.meta.main in .ts; the deterministic silent helper below still covers the defect`);
+  }
+  const viaDefect = hookRaw(onMain, NORMAL_PATH, defectHook);
+  check("G10 the hook denies the Inspector write to main with the import.meta.main helper", denied(viaDefect), JSON.stringify(viaDefect));
+  // Deterministic on every Node.js: a helper that never runs main() at all.
+  writeFileSync(join(defect, "write-guard.ts"), guardSrc.replace(ENTRY, "if (false) main();"));
+  for (const [label, p] of [["main", onMain], ["a working branch", onWork]] as const) {
+    const r = hookRaw(p, NORMAL_PATH, defectHook);
+    check(`G10 silent exit 0 is never authorization (Inspector write on ${label}) -> denied`, denied(r) && /exited 0 without the explicit ALLOW response/.test(r.stderr), JSON.stringify(r));
+  }
+  rmSync(join(defect, "write-guard.ts"));
+  const gone = hookRaw(onWork, NORMAL_PATH, defectHook);
+  check("G10 helper missing -> denied", denied(gone) && /helper is missing/.test(gone.stderr), JSON.stringify(gone));
+
+  // Malformed or unexpected helper output: a fake node prints it and exits 0 — never an allow.
+  const T = ALLOW_RESPONSE;
+  const outputs: Array<[string, string]> = [
+    ["no output at all", ":"],
+    ["a bare ALLOW", "printf 'ALLOW\\n'"],
+    ["the token without its newline", `printf '%s' '${T}'`],
+    ["the token followed by an empty line", `printf '%s\\n\\n' '${T}'`],
+    ["the token with a CRLF line ending", `printf '%s\\r\\n' '${T}'`],
+    ["the token with leading whitespace", `printf ' %s\\n' '${T}'`],
+    ["the token with trailing text", `printf '%s extra\\n' '${T}'`],
+    ["a diagnostic line before the token", `printf 'warning: something\\n%s\\n' '${T}'`],
+    ["a diagnostic line after the token", `printf '%s\\nwarning: something\\n' '${T}'`],
+    ["the token twice", `printf '%s\\n%s\\n' '${T}' '${T}'`],
+    ["the token in lower case", `printf '%s\\n' '${T.toLowerCase()}'`],
+    ["the token inside a sentence", `printf 'NOT %s\\n' '${T}'`],
+    ["the token on stderr only", `printf '%s\\n' '${T}' >&2`],
+    ["JSON that mentions ALLOW", `printf '{"decision":"ALLOW","token":"%s"}\\n' '${T}'`],
+  ];
+  for (const [label, body] of outputs) {
+    const r = hookRaw(onWork, fakeNode(`out-${outputs.findIndex((o) => o[0] === label)}`, body));
+    check(`G10 exit 0 with ${label} -> denied`, denied(r) && /without the explicit ALLOW response/.test(r.stderr), JSON.stringify(r));
+  }
+  check("G10 the exact ALLOW line but exit 1 -> denied", denied(hookRaw(onWork, fakeNode("allow-exit1", `printf '%s\\n' '${T}'; exit 1`))));
+  check("G10 the exact ALLOW line but exit 2 -> denied", hookRaw(onWork, fakeNode("allow-exit2", `printf '%s\\n' '${T}'; echo 'REFUSED: x. nothing was written' >&2; exit 2`)).code === 2);
+  check("G10 control: exactly the ALLOW line + exit 0 is the one authorization", allowed(hookRaw(onWork, fakeNode("exact", `printf '%s\\n' '${T}'`))));
+
+  // --- G11: install paths — spaces, Unicode, symlinked install, relative invocation ---------------
+  const odd = join(root, "plugin dir", "תוסף ü");
+  const oddScripts = join(odd, "scripts");
+  mkdirSync(oddScripts, { recursive: true });
+  for (const f of ["write-guard.sh", "write-guard.ts", "work-branch.ts", "entrypoint.ts", "node-preflight.mjs", "package.json"]) copyFileSync(join(PLUGIN, "scripts", f), join(oddScripts, f));
+  const oddMain = join(root, "repo dir", "פרויקט main");
+  initGit(oddMain, "main"); write(oddMain, "README.md", "x\n"); commitAll(oddMain, "init");
+  const oddWork = join(root, "repo dir", "פרויקט work");
+  initGit(oddWork, "chore/project-inspection"); write(oddWork, "README.md", "x\n"); commitAll(oddWork, "init");
+  const oddHook = join(oddScripts, "write-guard.sh");
+  const pOddMain = payload({ agent: INSPECTOR, tool: "Write", file: join(oddMain, "docs", "project", "סקירה.md") });
+  const pOddWork = payload({ agent: INSPECTOR, tool: "Write", file: join(oddWork, "docs", "project", "סקירה.md") });
+  check("G11 plugin + repository paths with spaces and Unicode: main -> denied", denied(hookRaw(pOddMain, NORMAL_PATH, oddHook)));
+  check("G11 plugin + repository paths with spaces and Unicode: working branch -> allowed", allowed(hookRaw(pOddWork, NORMAL_PATH, oddHook)));
+  const linked = join(root, "linked plugin");
+  if (linkOrJunction(odd, linked, "dir")) {
+    const linkedHook = join(linked, "scripts", "write-guard.sh");
+    check("G11 symlinked plugin install: working branch -> allowed (entry check resolves the link)", allowed(hookRaw(pOddWork, NORMAL_PATH, linkedHook)));
+    check("G11 symlinked plugin install: main -> denied", denied(hookRaw(pOddMain, NORMAL_PATH, linkedHook)));
+  } else skip("G11 symlinked plugin install", "no directory link could be created");
+  const rel = relative(root, oddHook);
+  check("G11 hook invoked by a relative path from another working directory: working branch -> allowed", allowed(hookRaw(pOddWork, NORMAL_PATH, rel, root)));
+  check("G11 hook invoked by a relative path: main -> denied", denied(hookRaw(pOddMain, NORMAL_PATH, rel, root)));
 
   // --- G9: registration and scope ---------------------------------------------------------------
   const hooksJson = JSON.parse(readFileSync(join(PLUGIN, "hooks", "hooks.json"), "utf-8"));
