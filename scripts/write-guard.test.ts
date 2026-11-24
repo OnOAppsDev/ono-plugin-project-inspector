@@ -29,6 +29,7 @@ import { execFileSync, spawnSync } from "child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, relative } from "path";
+import { pathToFileURL } from "url";
 import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures.ts";
 import { baseShims, childEnv, linkOrJunction, makeShims, pathList, SH, shPath } from "./fixtures/platform.ts";
 import { ALLOW_RESPONSE, INSPECTOR_AGENT_TYPES, GUARDED_TOOLS } from "./write-guard.ts";
@@ -195,7 +196,8 @@ try {
   const fake23 = join(root, "fake-node-23.mjs");
   writeFileSync(fake23, 'Object.defineProperty(process.versions, "node", { value: "23.11.0" });\n');
   // git stays reachable, so without the version check this working-branch write WOULD be allowed.
-  const node23 = hookRaw(onWork, fakeNode("node23", `exec "${shPath(NODE)}" --import "${shPath(fake23)}" "$@"`, true));
+  // --import takes a module specifier: on Windows an absolute path (D:\…) must be a file:// URL.
+  const node23 = hookRaw(onWork, fakeNode("node23", `exec "${shPath(NODE)}" --import "${pathToFileURL(fake23).href}" "$@"`, true));
   check("G7 an unsupported Node.js that can parse the helper (23.x) -> denied by the version check", denied(node23) && /Unsupported Node\.js v23\.11\.0/.test(node23.stderr), JSON.stringify(node23));
   check("G7 git unavailable inside a repository -> branch unknown -> denied", denied(hookRaw(onWork, noGit)));
   const broken = join(root, "broken-repo");

@@ -85,7 +85,8 @@ try {
   for (const v of ["20.19.5", "22.17.1", "23.11.0"]) {
     const fake = join(tmp, `fake-${v}.mjs`);
     writeFileSync(fake, `Object.defineProperty(process.versions, "node", { value: ${JSON.stringify(v)} });\n`);
-    const u = run(["--import", fake]);
+    // --import takes a module specifier: on Windows an absolute path (D:\…) must be a file:// URL.
+    const u = run(["--import", pathToFileURL(fake).href]);
     const j = parse(u.stdout);
     check(`P3 reported Node.js ${v}: exit 1, supported false, one JSON line, nothing on stderr`, u.status === 1 && j?.supported === false && j?.version === v && u.stdout.trim().split("\n").length === 1 && u.stderr === "", `${u.status} ${u.stdout} ${u.stderr}`);
   }
