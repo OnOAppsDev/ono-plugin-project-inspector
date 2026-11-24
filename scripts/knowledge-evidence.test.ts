@@ -7,7 +7,7 @@
  * repositories and runs the CLI (stdout JSON + exit code).
  *
  * No external test framework. Run with:
- *   bun scripts/knowledge-evidence.test.ts
+ *   node --no-warnings scripts/knowledge-evidence.test.ts
  */
 
 import { execFileSync } from "child_process";
@@ -37,10 +37,10 @@ import {
   REL_SHARED_COMPONENT,
   REL_SHARED_STATE,
   REL_SHARED_SERVICE,
-  RelationshipFixture,
-} from "./fixtures/knowledge-fixtures";
+  type RelationshipFixture,
+} from "./fixtures/knowledge-fixtures.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const HELPER = join(HERE, "knowledge-evidence.ts");
 const RUNTIME = process.execPath;
 
@@ -54,7 +54,7 @@ function run(args: string[]): { code: number; out: any; raw: string } {
   let raw = "";
   let code = 0;
   try {
-    raw = execFileSync(RUNTIME, [HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    raw = execFileSync(RUNTIME, ["--no-warnings", HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (err: any) {
     code = typeof err.status === "number" ? err.status : 1;
     raw = err.stdout?.toString() ?? "";

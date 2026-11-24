@@ -6,16 +6,16 @@
  * from a chosen working directory, with or without an explicit path.
  *
  * No external test framework. Run with:
- *   bun scripts/resolve-repo-root.test.ts
+ *   node --no-warnings scripts/resolve-repo-root.test.ts
  */
 
 import { execFileSync } from "child_process";
 import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures";
+import { commitAll, git, initGit, write } from "./fixtures/knowledge-fixtures.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const RESOLVER = join(HERE, "resolve-repo-root.ts");
 const RUNTIME = process.execPath;
 
@@ -28,7 +28,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 function resolveAt(cwd: string, ...args: string[]): { code: number; json: any; stderr: string } {
   let code = 0, stdout = "", stderr = "";
   try {
-    stdout = execFileSync(RUNTIME, [RESOLVER, ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    stdout = execFileSync(RUNTIME, ["--no-warnings", RESOLVER, ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (err: any) {
     code = typeof err.status === "number" ? err.status : 1;
     stdout = err.stdout?.toString() ?? "";

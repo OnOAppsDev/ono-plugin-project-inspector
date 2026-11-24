@@ -1,0 +1,18 @@
+# Every text file of the plugin is checked out with LF line endings on every
+# platform. Git for Windows defaults to core.autocrlf=true, which would otherwise
+# give the shell scripts CRLF endings (sh then fails on `$'\r'`) and the agent,
+# hook and skill instructions CRLF endings that the contract tests and parsers do
+# not expect. Claude Code installs plugins with Git, so this also applies to
+# developers' installed copies.
+* text=auto eol=lf
+
+# Shell scripts run under sh/bash on every platform, including Windows Git Bash.
+*.sh text eol=lf
+# Node helpers, the preflight and the hook registration.
+*.ts text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+
+# The 0.11.3 compatibility fixture is a byte-exact baseline (its first commit ID is
+# reproduced by compat-0.11.test.ts): never convert its line endings.
+scripts/fixtures/inspected-0.11.3/** -text

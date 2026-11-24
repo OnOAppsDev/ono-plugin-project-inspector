@@ -1,24 +1,39 @@
 /**
- * write-guard.ts — decision logic of the Inspector write guard (0.11.3).
+ * write-guard.ts — decision logic of the Inspector write guard (0.11.3; Node.js since 0.12.0).
  *
  * Invoked by scripts/write-guard.sh (the PreToolUse hook registered in
  * hooks/hooks.json for Write|Edit|MultiEdit|NotebookEdit) only after the raw
  * hook input names the Inspector in its `agent_type` metadata. It reads the
- * hook input JSON on stdin and exits:
+ * hook input JSON on stdin and:
  *
- *   0 - allow: not the Inspector agent after all, or the target is on an
- *       ordinary working branch, or outside any Git repository
- *   2 - deny (reason on stderr): an Inspector write while the target's
- *       repository is on main, master, a detached HEAD, or a branch that
- *       cannot be determined; malformed input; no resolvable target; any error
+ *   allow - prints exactly ALLOW_RESPONSE plus one newline on stdout, and
+ *           nothing else, and exits 0: not the Inspector agent after all, or
+ *           the target is on an ordinary working branch, or outside any Git
+ *           repository
+ *   deny  - prints nothing on stdout, the reason on stderr, and exits 2: an
+ *           Inspector write while the target's repository is on main, master,
+ *           a detached HEAD, or a branch that cannot be determined; malformed
+ *           input; no resolvable target; an unsupported Node.js; any error
  *
- * Every path except an explicit allow ends in exit 2, so a confirmed Inspector
- * call never fails open. Nothing is written, and the developer is never asked.
+ * The wrapper authorizes a write ONLY on exit 0 together with stdout equal to
+ * ALLOW_RESPONSE + "\n", byte for byte. Exit 0 alone is never authorization:
+ * a helper that silently did nothing (the `import.meta.main` defect found in the
+ * 0.12.0 migration) exits 0 with empty stdout, and that is a deny. Nothing is
+ * written, and the developer is never asked.
  */
 
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "fs";
 import { dirname, isAbsolute, resolve } from "path";
-import { branchState, refusalMessage } from "./work-branch";
+import { branchState, refusalMessage } from "./work-branch.ts";
+import { isEntryPoint, writeAll } from "./entrypoint.ts";
+import { preflight } from "./node-preflight.mjs";
+
+/**
+ * The one response that authorizes an Inspector write. scripts/write-guard.sh
+ * compares stdout with exactly this line; keep the two in sync (write-guard.test.ts
+ * holds them to each other).
+ */
+export const ALLOW_RESPONSE = "ONO-INSPECTOR-WRITE-GUARD:ALLOW";
 
 /**
  * The `agent_type` Claude Code reports for this plugin's agent: the
@@ -96,21 +111,29 @@ export function decide(input: unknown): Decision {
 function main(): void {
   let decision: Decision | undefined;
   try {
+    // An unsupported Node.js never authorizes an Inspector write, even one that can parse this file (Node 23).
+    const runtime = preflight(process.versions.node, process.execPath);
+    if (!runtime.supported) decision = deny(runtime.message.replace(/\.$/, ""));
     let input: unknown;
     try {
       input = JSON.parse(readFileSync(0, "utf-8"));
     } catch (err) {
       input = undefined;
-      decision = deny(`the hook input for an Inspector call is not valid JSON (${(err as Error).message})`);
+      decision ??= deny(`the hook input for an Inspector call is not valid JSON (${(err as Error).message})`);
     }
     decision ??= decide(input);
   } catch (err) {
     decision = deny(`the Inspector write guard failed: ${(err as Error).message}`);
   }
-  if (decision!.allow) process.exit(0);
+  if (decision!.allow) {
+    // Written synchronously and completely: the wrapper reads stdout to decide.
+    writeAll(1, ALLOW_RESPONSE + "\n");
+    process.exitCode = 0;
+    return;
+  }
   const reason = decision!.reason;
-  console.error(reason.startsWith("REFUSED") ? reason : `REFUSED: ${reason}. The write was blocked; nothing was written.`);
+  writeAll(2, (reason.startsWith("REFUSED") ? reason : `REFUSED: ${reason}. The write was blocked; nothing was written.`) + "\n");
   process.exit(2);
 }
 
-if (import.meta.main) main();
+if (isEntryPoint(import.meta.url)) main();

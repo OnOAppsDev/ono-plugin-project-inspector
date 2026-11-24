@@ -15,6 +15,8 @@
  * - Trim leading/trailing hyphens.
  */
 
+import { isEntryPoint } from "./entrypoint.ts";
+
 export function slugify(topic: string): string {
   return topic
     .toLowerCase()
@@ -24,8 +26,8 @@ export function slugify(topic: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-// Quick self-check examples from SKILL.md, run with: npx ts-node slugify.ts
-if (require.main === module) {
+// Quick self-check examples from SKILL.md, run with: node --no-warnings scripts/slugify.ts
+if (isEntryPoint(import.meta.url)) {
   const cases: Array<[string, string]> = [
     ["Architecture", "architecture"],
     ["Managers and Singletons", "managers-and-singletons"],

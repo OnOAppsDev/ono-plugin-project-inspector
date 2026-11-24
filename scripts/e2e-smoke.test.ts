@@ -3,7 +3,7 @@
  *
  * Deterministic end-to-end smoke test of the Inspector's helper pipeline
  * (0.11.2). It drives the REAL scripts exactly as the agent and its hooks do —
- * by absolute plugin path (`bun <PLUGIN_ROOT>/scripts/<name>.ts`) from the
+ * by absolute plugin path (`node --no-warnings "<PLUGIN_ROOT>/scripts/<name>.ts"`) from the
  * developer's project as working directory, never from the plugin directory —
  * through a full inspection, a source change, a Refresh Project Knowledge, and
  * the upgrade of a 0.10.0-shaped inspection. It runs for a project at the Git
@@ -15,17 +15,20 @@
  * refresh on the working branch — and a check that an ordinary working branch
  * gets no new branch.
  *
+ * 0.12.0: every helper runs with Node.js (`node --no-warnings`), and the run
+ * starts with the Node.js preflight (scripts/node-preflight.mjs).
+ *
  * Only the model-authored artifact text is substituted by fixtures (what the
  * skills would write); every gate, state transition and manifest emit is the
  * real code path. The live, model-driven run is covered separately by the
  * real Claude Code smoke test (see CHANGELOG 0.11.2).
  *
  * No external test framework. Run with:
- *   bun scripts/e2e-smoke.test.ts
+ *   node --no-warnings scripts/e2e-smoke.test.ts
  */
 
 import { execFileSync } from "child_process";
-import { FIXTURE_BRANCH, git } from "./fixtures/knowledge-fixtures";
+import { FIXTURE_BRANCH, git } from "./fixtures/knowledge-fixtures.ts";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -39,9 +42,9 @@ import {
   surfacesSection,
   write,
   writeKnowledge,
-} from "./fixtures/knowledge-fixtures";
+} from "./fixtures/knowledge-fixtures.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const PLUGIN_ROOT = realpathSync(join(HERE, ".."));
 const RUNTIME = process.execPath;
 
@@ -52,11 +55,11 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 interface Run { code: number; stdout: string; stderr: string; json: any }
-/** `bun "<PLUGIN_ROOT>/scripts/<script>" …` with the developer's project as CWD — exactly the agent's invocation. */
+/** `node --no-warnings "<PLUGIN_ROOT>/scripts/<script>" …` with the developer's project as CWD — exactly the agent's invocation. */
 function helper(cwd: string, script: string, ...args: string[]): Run {
   let code = 0, stdout = "", stderr = "";
   try {
-    stdout = execFileSync(RUNTIME, [join(PLUGIN_ROOT, "scripts", script), ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    stdout = execFileSync(RUNTIME, ["--no-warnings", join(PLUGIN_ROOT, "scripts", script), ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (err: any) {
     code = typeof err.status === "number" ? err.status : 1;
     stdout = err.stdout?.toString() ?? "";
@@ -68,8 +71,8 @@ function helper(cwd: string, script: string, ...args: string[]): Run {
 }
 function preflight(cwd: string): Run {
   try {
-    const stdout = execFileSync("/bin/sh", [join(PLUGIN_ROOT, "scripts", "check-bun.sh")], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
-    return { code: 0, stdout, stderr: "", json: null };
+    const stdout = execFileSync(RUNTIME, [join(PLUGIN_ROOT, "scripts", "node-preflight.mjs")], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    return { code: 0, stdout, stderr: "", json: JSON.parse(stdout) };
   } catch (err: any) {
     return { code: err.status ?? 1, stdout: "", stderr: err.stderr?.toString() ?? "", json: null };
   }
@@ -90,7 +93,8 @@ const INSPECTOR_FILES = ["CLAUDE.md", "AUDIT.md", ".ono/state.json", ".ono/repo-
 
 /** Run a complete inspection the way the agent does, against TARGET_ROOT. Returns the final detect JSON. */
 function fullInspection(label: string, gitRoot: string, target: string): any {
-  check(`${label} preflight: Bun available`, preflight(target).code === 0);
+  const pre = preflight(target);
+  check(`${label} preflight: Node.js supported`, pre.code === 0 && pre.json?.supported === true, pre.stdout + pre.stderr);
   const fresh = helper(target, "inspection-state.ts", "detect", target).json;
   check(`${label} detect: no inspection yet`, fresh?.inspected === false, JSON.stringify(fresh));
 

@@ -42,9 +42,10 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "fs";
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
-import { slugify } from "./slugify";
-import { headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model";
-import { assertWritable, guardWrite } from "./work-branch";
+import { slugify } from "./slugify.ts";
+import { headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model.ts";
+import { assertWritable, guardWrite } from "./work-branch.ts";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 /** Bump when the shape of state.json changes; add a migration in migrateState(). */
 const STATE_SCHEMA_VERSION = 1;
@@ -128,7 +129,7 @@ interface RegistryStage {
  */
 function loadInspectionStages(): RegistryStage[] {
   try {
-    const reg = JSON.parse(readFileSync(join(__dirname, "..", "skills", "registry.json"), "utf-8"));
+    const reg = JSON.parse(readFileSync(join(import.meta.dirname, "..", "skills", "registry.json"), "utf-8"));
     return ((reg.skills ?? []) as any[])
       .filter((s) => s.enabled !== false && s.type === "workflow" && s.workflowRole === "inspection")
       .map((s) => ({
@@ -204,7 +205,7 @@ function statePath(repoRoot: string): string {
 function currentPluginVersion(): { name: string; version: string } {
   try {
     const manifest = JSON.parse(
-      readFileSync(join(__dirname, "..", ".claude-plugin", "plugin.json"), "utf-8")
+      readFileSync(join(import.meta.dirname, "..", ".claude-plugin", "plugin.json"), "utf-8")
     );
     return { name: manifest.name ?? "ono-project-inspector", version: manifest.version ?? "0.0.0" };
   } catch {
@@ -846,6 +847,7 @@ function main(): void {
   }
 }
 
-if (require.main === module) {
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
   main();
 }

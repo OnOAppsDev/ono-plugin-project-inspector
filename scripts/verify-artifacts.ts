@@ -7,7 +7,7 @@
  * failure where artifacts were written only inside a Claude agent worktree.
  *
  * Usage:
- *   bun scripts/verify-artifacts.ts <repo-root> <relpath> [relpath...]
+ *   node --no-warnings scripts/verify-artifacts.ts <repo-root> <relpath> [relpath...]
  *
  * - Templated paths containing "<" are skipped; pass the concrete resolved
  *   path (e.g. audits/architecture/architecture-audit.md) instead.
@@ -25,7 +25,8 @@
 import { existsSync, readdirSync, realpathSync } from "fs";
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
-import { branchState, EXIT_PROTECTED, refusalMessage } from "./work-branch";
+import { branchState, EXIT_PROTECTED, refusalMessage } from "./work-branch.ts";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 const MARKER = `${sep}.claude${sep}worktrees${sep}`;
 
@@ -96,4 +97,7 @@ function main(): void {
   process.exit(ok ? 0 : 4);
 }
 
-main();
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
+  main();
+}

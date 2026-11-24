@@ -23,7 +23,8 @@
  */
 
 import { readFileSync } from "fs";
-import { slugify } from "./slugify";
+import { slugify } from "./slugify.ts";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 interface TopicRow {
   index: string;
@@ -108,6 +109,7 @@ function main(): void {
   process.exit(0);
 }
 
-if (require.main === module) {
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
   main();
 }

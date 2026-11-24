@@ -1,5 +1,5 @@
 {
-  "description": "Inspector write guard (0.11.3): denies Write/Edit/MultiEdit/NotebookEdit calls made by the project-inspector agent while the target repository is on main, master, a detached HEAD, or a branch that cannot be determined. Calls from the main session and from every other agent are allowed immediately and untouched.",
+  "description": "Inspector write guard (0.11.3; Node.js since 0.12.0): denies Write/Edit/MultiEdit/NotebookEdit calls made by the project-inspector agent while the target repository is on main, master, a detached HEAD, or a branch that cannot be determined. An Inspector call is allowed only on the helper's explicit ALLOW response; anything else, including a missing or unsupported Node.js, denies. Calls from the main session and from every other agent are allowed immediately and untouched.",
   "hooks": {
     "PreToolUse": [
       {

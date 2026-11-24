@@ -23,7 +23,7 @@
  * the knowledge; a violation stops the stage.
  *
  * Usage:
- *   bun scripts/knowledge-evidence.ts verify <repo-root> [surfaces|docs|all]
+ *   node --no-warnings scripts/knowledge-evidence.ts verify <repo-root> [surfaces|docs|all]
  *
  * Exit codes:
  *   0 - every checked fact is grounded
@@ -47,9 +47,10 @@ import {
   parseEvidenceRef,
   parseInventory,
   parseSurfaceModel,
-  Capability,
-} from "./knowledge-model";
-import { isInspectorOwned } from "./inspection-state";
+  type Capability,
+} from "./knowledge-model.ts";
+import { isInspectorOwned } from "./inspection-state.ts";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 const WORKTREE_MARKER = `${sep}.claude${sep}worktrees${sep}`;
 
@@ -294,6 +295,7 @@ function main(): void {
   process.exit(errors.length === 0 ? 0 : 3);
 }
 
-if (require.main === module) {
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
   main();
 }

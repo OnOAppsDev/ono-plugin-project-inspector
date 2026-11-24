@@ -6,7 +6,7 @@
  * capabilities, capability relationships). Pure functions, no filesystem.
  *
  * No external test framework. Run with:
- *   bun scripts/knowledge-model.test.ts
+ *   node --no-warnings scripts/knowledge-model.test.ts
  */
 
 import {
@@ -22,7 +22,7 @@ import {
   RELATIONSHIP_TYPES,
   EVIDENCE_KINDS,
   GENERIC_PATTERN_SECTIONS as MODEL_SECTIONS,
-} from "./knowledge-model";
+} from "./knowledge-model.ts";
 import {
   surfacesSection,
   claudeMd,
@@ -39,7 +39,7 @@ import {
   APP_COMPONENTS,
   APP_SERVICES,
   GENERIC_PATTERN_SECTIONS,
-} from "./fixtures/knowledge-fixtures";
+} from "./fixtures/knowledge-fixtures.ts";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {

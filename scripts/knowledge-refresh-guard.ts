@@ -17,7 +17,7 @@
  * snapshot, and the agent stops so the developer can restore from Git.
  *
  * Usage:
- *   bun scripts/knowledge-refresh-guard.ts <snapshot|verify> <repo-root>
+ *   node --no-warnings scripts/knowledge-refresh-guard.ts <snapshot|verify> <repo-root>
  *
  * Exit codes:
  *   0 - snapshot written / verify passed (snapshot removed)
@@ -29,7 +29,8 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync, rmSync } from "fs";
 import { join, sep } from "path";
-import { assertWritable, guardWrite } from "./work-branch";
+import { assertWritable, guardWrite } from "./work-branch.ts";
+import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 const WORKTREE_MARKER = `${sep}.claude${sep}worktrees${sep}`;
 const SNAPSHOT_REL = join(".ono", "knowledge-refresh-snapshot.json");
@@ -195,6 +196,7 @@ function main(): void {
   }
 }
 
-if (require.main === module) {
+if (isEntryPoint(import.meta.url)) {
+  useBlockingOutput();
   main();
 }

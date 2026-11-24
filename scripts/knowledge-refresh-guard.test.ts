@@ -7,7 +7,7 @@
  * approval metadata, and CLAUDE.md audit-sync managed blocks).
  *
  * No external test framework. Run with:
- *   bun scripts/knowledge-refresh-guard.test.ts
+ *   node --no-warnings scripts/knowledge-refresh-guard.test.ts
  */
 
 import { execFileSync } from "child_process";
@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSy
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const HELPER = join(HERE, "knowledge-refresh-guard.ts");
 const RUNTIME = process.execPath;
 
@@ -27,7 +27,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 
 function run(args: string[]): { code: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(RUNTIME, [HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = execFileSync(RUNTIME, ["--no-warnings", HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
     return { code: 0, stdout, stderr: "" };
   } catch (err: any) {
     return { code: typeof err.status === "number" ? err.status : 1, stdout: err.stdout?.toString() ?? "", stderr: err.stderr?.toString() ?? "" };

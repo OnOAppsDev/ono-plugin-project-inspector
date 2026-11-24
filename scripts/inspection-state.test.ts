@@ -8,16 +8,16 @@
  * git repositories in a temp dir and exercises the CLI end-to-end.
  *
  * No external test framework. Run with:
- *   bun scripts/inspection-state.test.ts
+ *   node --no-warnings scripts/inspection-state.test.ts
  */
 
 import { execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
-import { writeKnowledge, APP_SOURCE } from "./fixtures/knowledge-fixtures";
+import { writeKnowledge, APP_SOURCE } from "./fixtures/knowledge-fixtures.ts";
 
-const HERE = typeof __dirname !== "undefined" ? __dirname : ".";
+const HERE = import.meta.dirname;
 const HELPER = join(HERE, "inspection-state.ts");
 const RUNTIME = process.execPath;
 
@@ -29,7 +29,7 @@ function check(name: string, cond: boolean, detail = ""): void {
 
 function run(args: string[]): { code: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(RUNTIME, [HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = execFileSync(RUNTIME, ["--no-warnings", HELPER, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
     return { code: 0, stdout, stderr: "" };
   } catch (err: any) {
     return { code: typeof err.status === "number" ? err.status : 1, stdout: err.stdout?.toString() ?? "", stderr: err.stderr?.toString() ?? "" };

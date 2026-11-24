@@ -1,0 +1,98 @@
+# Runs the Inspector's own deterministic suite on every pull request to main and on
+# pushes to main.
+#
+#   node --no-warnings scripts/check.ts --strict
+#
+# --strict makes any skipped assertion a failure, so a green job means every suite
+# ran completely on that OS and Node.js. Matrix: the supported Node.js versions
+# (README § Requirements) — the 22.18.0 minimum and the current Node 24 — on
+# Ubuntu, macOS and Windows. Windows runs every step in Git Bash, the shell Claude
+# Code uses there, so the hook (`sh …/write-guard.sh`) runs as it does for developers.
+#
+# This workflow tests the plugin itself. The Inspector at runtime needs only Node.js
+# and local Git: no GitHub CLI, API, Actions or credentials, and nothing here is used
+# by it. No dependency is installed, nothing is built, published or deployed, no
+# secret is used, and permissions are read-only.
+#
+# Bun: the Inspector no longer uses Bun. Hosted runner images may ship it anyway, so
+# the suite runs with every directory that contains a bun executable removed from
+# PATH, and the job fails if `bun` is still reachable.
+name: Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict:
+    name: Strict suite (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ["22.18.0", "24"]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The suites create throwaway git repositories and commit in them.
+      GIT_AUTHOR_NAME: ci
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: ci
+      GIT_COMMITTER_EMAIL: ci@example.invalid
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Use the runner's temp directory (long path names on Windows)
+        # The default Windows %TEMP% can be an 8.3 short path (C:\Users\RUNNER~1\…), which
+        # Git reports in long form; RUNNER_TEMP is a plain long path on every OS.
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Tool versions
+        run: |
+          node --version
+          git --version
+          bash --version | head -1
+          sh -c 'echo "sh: $0"'
+      - name: Line endings are LF in the checkout (.gitattributes)
+        run: |
+          if grep -l $'\r' scripts/*.sh scripts/*.ts scripts/*.mjs hooks/*.json agents/*.md hooks/*.md; then
+            echo "::error::CRLF line endings in the checkout"; exit 1
+          fi
+      - name: Strict suite with Bun unavailable on PATH
+        run: |
+          NO_BUN_PATH=""
+          IFS=':' read -r -a dirs <<< "$PATH"
+          for d in "${dirs[@]}"; do
+            [ -n "$d" ] || continue
+            if [ -e "$d/bun" ] || [ -e "$d/bun.exe" ] || [ -e "$d/bun.cmd" ]; then
+              echo "Removing from PATH (contains bun): $d"
+              continue
+            fi
+            NO_BUN_PATH="${NO_BUN_PATH:+$NO_BUN_PATH:}$d"
+          done
+          export PATH="$NO_BUN_PATH"
+          if command -v bun; then
+            echo "::error::bun is still reachable on PATH"; exit 1
+          fi
+          echo "bun: not on PATH"
+          node --version
+          node --no-warnings scripts/check.ts --strict
