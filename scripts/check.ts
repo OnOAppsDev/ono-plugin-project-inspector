@@ -39,6 +39,7 @@ const PHASES: Phase[] = [
     suites: [
       "knowledge-model", "inspection-state", "repo-knowledge", "knowledge-evidence", "knowledge-refresh-guard", "resolve-repo-root", "work-branch",
       "git-paths", "freshness-contract", "doc-header", "audit-recheck", "session-cost",
+      "line-endings", "document-preservation", "audit-line-endings",
     ],
   },
   { name: "Safety", why: "the hook that gates every Inspector write", suites: ["write-guard"] },
