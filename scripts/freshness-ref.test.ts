@@ -112,9 +112,11 @@ try {
   writeFileSync(join(repo, "CLAUDE.md"), "# CLAUDE.md\n\nRewritten on the feature branch, no surfaces.\n");
   put(repo, "untracked.txt", "u\n");
 
-  // Reference: a real checkout of the central branch, measured without --ref.
+  // Reference: a real LF checkout of the central branch, measured without --ref. It is also the
+  // FR12 comparison with released 0.13.0, which must see LF: the line ending is set explicitly so
+  // a runner-level core.autocrlf=true (Git for Windows) cannot turn it into the CRLF case.
   const central = join(root, "central");
-  execFileSync("git", ["clone", "-q", "--no-hardlinks", "-b", "dev", repo, central], { env: GIT_ENV });
+  execFileSync("git", ["-c", "core.autocrlf=false", "clone", "-q", "-c", "core.autocrlf=false", "--no-hardlinks", "-b", "dev", repo, central], { env: GIT_ENV });
   const expected = fresh(central).json;
 
   // --- FR1 ---------------------------------------------------------------------------------------

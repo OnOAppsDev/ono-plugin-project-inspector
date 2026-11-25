@@ -20,6 +20,7 @@ import { execFileSync, spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { pathToFileURL } from "url";
 import { extractRelease, helper } from "./fixtures/inspected.ts";
 import { commitOrigin, crlf, employeeClone, eolCounts, gitEol, lfClone } from "./fixtures/line-endings.ts";
 import { write } from "./fixtures/knowledge-fixtures.ts";
@@ -51,7 +52,8 @@ const CORPUS: Record<string, string> = {
 
 const released = join(root, "inspector-0.13.0");
 extractRelease(REL_0130, ["scripts", "skills", ".claude-plugin"], released);
-const old = await import(join(released, "scripts", "doc-header.ts"));
+// A file:// URL: the ESM loader rejects a raw C:\ path on Windows.
+const old = await import(pathToFileURL(join(released, "scripts", "doc-header.ts")).href);
 const oldStamp = (dir: string, ...rels: string[]) => spawnSync(process.execPath, ["--no-warnings", join(released, "scripts", "inspection-state.ts"), "stamp-docs", dir, ...rels], { encoding: "utf-8" });
 const stamp = (dir: string, ...rels: string[]) => helper(dir, "inspection-state.ts", "stamp-docs", dir, ...rels);
 const action = (r: { json: any }, i = 0) => r.json?.results?.[i]?.action;

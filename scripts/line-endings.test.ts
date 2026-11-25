@@ -28,6 +28,7 @@ import { execFileSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { pathToFileURL } from "url";
 import {
   APP_SHARED, APP_SOURCE, APP_SURFACES, claudeMd, surfacesSection, write, writeApp, type SharedRow, type SurfaceRow,
 } from "./fixtures/knowledge-fixtures.ts";
@@ -305,7 +306,8 @@ try {
     // The legacy id equals what the released 0.13.0 parser derived from the same CRLF text.
     const rel = join(root, "inspector-0.13.0");
     extractRelease(REL_0130, ["scripts", "skills", ".claude-plugin"], rel);
-    const old = await import(join(rel, "scripts", "audit-recheck.ts"));
+    // A file:// URL: the ESM loader rejects a raw C:\ path on Windows.
+    const old = await import(pathToFileURL(join(rel, "scripts", "audit-recheck.ts")).href);
     const legacyIds = old.parseFindings(crlf(ARCH_AUDIT), exists).map((f: any) => f.id);
     check("LE7 legacyId is exactly the id released 0.13.0 derives from the CRLF text", JSON.stringify(b.map((f) => f.legacyId ?? f.id)) === JSON.stringify(legacyIds), JSON.stringify(legacyIds));
     check("LE7 ...and the id 0.13.0 derives from LF text is unchanged", JSON.stringify(old.parseFindings(ARCH_AUDIT, exists).map((f: any) => f.id)) === JSON.stringify(a.map((f) => f.id)));
