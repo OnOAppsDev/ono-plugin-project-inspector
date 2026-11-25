@@ -75,6 +75,15 @@ jobs:
           git --version
           bash --version | head -1
           sh -c 'echo "sh: $0"'
+      - name: Git line-ending configuration (diagnostic)
+        # Git for Windows ships core.autocrlf=true in its system config, which is how inspected
+        # repositories get CRLF Markdown on Windows. The plugin's own checkout is protected by
+        # .gitattributes, so the line-ending suites (line-endings, document-preservation,
+        # audit-line-endings, recovery) build their CRLF fixtures with explicit bytes and a
+        # repo-local core.autocrlf=true clone instead of relying on this value. Printed, never changed.
+        run: |
+          git config --show-origin --get-all core.autocrlf || echo "core.autocrlf: (unset)"
+          git config --show-origin --get-all core.eol || echo "core.eol: (unset)"
       - name: Line endings are LF in the checkout (.gitattributes)
         run: |
           if grep -l $'\r' scripts/*.sh scripts/*.ts scripts/*.mjs hooks/*.json agents/*.md hooks/*.md; then

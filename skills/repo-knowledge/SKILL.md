@@ -76,7 +76,7 @@ Invoking this skill is bookkeeping, not workflow advancement, and never needs de
 
 ## Portability
 
-The manifest is committed to Git alongside `.ono/state.json`, so a teammate who has not run `/inspect` still benefits from the approved knowledge. It stores only repo-relative paths, content hashes, and the git HEAD SHA — never an absolute filesystem path. This skill does not modify the repository's `.gitignore`.
+The manifest is committed to Git alongside `.ono/state.json`, so a teammate who has not run `/inspect` still benefits from the approved knowledge. It stores only repo-relative paths, content hashes, and the git HEAD SHA — never an absolute filesystem path. Since 0.14.0 the content hashes are canonical (`fingerprint.artifactHash: "sha256-lf"`: CRLF normalized to LF before hashing), so an LF and a CRLF checkout of the same commit emit the same manifest; see `docs/repo-knowledge-contract.md` "Artifact hashes". This skill does not modify the repository's `.gitignore`.
 
 ## Hard Constraints
 

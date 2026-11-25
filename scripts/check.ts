@@ -44,7 +44,7 @@ const PHASES: Phase[] = [
   },
   { name: "Safety", why: "the hook that gates every Inspector write", suites: ["write-guard"] },
   { name: "Contracts", why: "instructions and code cannot drift apart", suites: ["agent-contract", "knowledge-templates"] },
-  { name: "Integration", why: "full pipelines, and repositories inspected by 0.11.x", suites: ["e2e-smoke", "compat-0.11"] },
+  { name: "Integration", why: "full pipelines, repositories inspected by 0.11.x, and the documented CRLF recovery", suites: ["e2e-smoke", "compat-0.11", "recovery"] },
 ];
 
 const NOT_PROVEN = [
