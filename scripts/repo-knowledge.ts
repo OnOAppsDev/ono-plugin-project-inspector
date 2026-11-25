@@ -33,10 +33,10 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "fs";
-import { createHash } from "crypto";
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify.ts";
+import { CANONICAL_HASH, canonicalSha256, forParsing } from "./markdown-text.ts";
 import { assertWritable, guardWrite } from "./work-branch.ts";
 import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 import {
@@ -57,6 +57,18 @@ export { headingAnchors };
 
 /** Bump only for a breaking shape change; additive fields keep version 1. */
 export const REPO_KNOWLEDGE_SCHEMA_VERSION = 1;
+
+/**
+ * Artifact hash algorithms (`fingerprint.artifactHash`, additive in 0.14.0):
+ *   absent       legacy (0.9.0 – 0.13.0): SHA-256 of the document text exactly as read from the
+ *                working tree at emit time — raw line endings, so a CRLF checkout of a document
+ *                hashes differently from its LF checkout.
+ *   "sha256-lf"  SHA-256 of the UTF-8 text with every CRLF pair normalized to LF. Identical to
+ *                the legacy hash for a document stored with LF; identical for every checkout.
+ * Any other value is not a supported algorithm: `validate` rejects it rather than guessing.
+ */
+export const ARTIFACT_HASH = CANONICAL_HASH;
+export const SUPPORTED_ARTIFACT_HASHES = [CANONICAL_HASH] as const;
 
 const WORKTREE_MARKER = `${sep}.claude${sep}worktrees${sep}`;
 
@@ -161,6 +173,8 @@ export interface RepoKnowledge {
   fingerprint: {
     /** HEAD at emit time. Advances on every emit, including a metadata-only re-emit. */
     gitHead: string | null;
+    /** Algorithm of `artifacts` (0.14.0). Absent = legacy raw-text SHA-256 (see ARTIFACT_HASH). */
+    artifactHash?: string;
     /**
      * HEAD at which source-backed Project Knowledge was last actually generated.
      * Mirrored from `.ono/state.json` `repository.knowledgeHead`, which only
@@ -202,10 +216,6 @@ function manifestPath(repoRoot: string): string {
 function readIfExists(repoRoot: string, rel: string): string | null {
   const p = join(repoRoot, rel);
   return existsSync(p) ? readFileSync(p, "utf-8") : null;
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf-8").digest("hex");
 }
 
 function gitHead(repoRoot: string): string | null {
@@ -336,6 +346,7 @@ export function extractStackFromProse(md: string): Partial<RepoKnowledge["stack"
  * known comment. "Unknown" is treated as absent, per the template's own rule.
  */
 export function extractCommandsFromProse(md: string): RepoKnowledge["commands"] {
+  md = forParsing(md); // the fenced-block rule below matches "\n" literally
   const result: RepoKnowledge["commands"] = { install: null, run: null, test: null, build: null };
   const block = md.match(/##\s*Build, Run, and Test Commands[\s\S]*?```bash\n([\s\S]*?)```/i);
   if (!block) return result;
@@ -508,16 +519,22 @@ function knowledgeModel(claudeMd: string | null, docs: Record<string, string | n
 }
 
 export function buildManifest(repoRoot: string): RepoKnowledge {
-  const claudeMd = readIfExists(repoRoot, "CLAUDE.md");
-  const auditMd = readIfExists(repoRoot, "AUDIT.md");
+  // Each document is hashed from its text as read (canonical, line-ending independent) and
+  // parsed from an LF-normalized copy (0.14.0), so a CRLF checkout indexes exactly like LF.
+  const raw: Record<string, string | null> = {};
   const bodies: Record<string, string | null> = {};
-  for (const rel of SOURCE_ARTIFACTS) bodies[rel] = readIfExists(repoRoot, rel);
+  for (const rel of SOURCE_ARTIFACTS) {
+    raw[rel] = readIfExists(repoRoot, rel);
+    bodies[rel] = raw[rel] === null ? null : forParsing(raw[rel] as string);
+  }
+  const claudeMd = bodies["CLAUDE.md"];
+  const auditMd = bodies["AUDIT.md"];
   const model = knowledgeModel(claudeMd, bodies);
 
   const artifacts: Record<string, string | null> = {};
   for (const rel of SOURCE_ARTIFACTS) {
-    const body = bodies[rel];
-    artifacts[rel] = body === null ? null : sha256(body);
+    const body = raw[rel];
+    artifacts[rel] = body === null ? null : canonicalSha256(body);
   }
 
   const documents: Record<string, DocumentRef> = {};
@@ -571,7 +588,7 @@ export function buildManifest(repoRoot: string): RepoKnowledge {
     repoKnowledgeSchemaVersion: REPO_KNOWLEDGE_SCHEMA_VERSION,
     producedBy: currentPlugin(),
     generatedAt: new Date().toISOString(),
-    fingerprint: { gitHead: gitHead(repoRoot), knowledgeHead: knowledgeHead(repoRoot), artifacts },
+    fingerprint: { gitHead: gitHead(repoRoot), knowledgeHead: knowledgeHead(repoRoot), artifactHash: ARTIFACT_HASH, artifacts },
     coverage,
     stack,
     commands,
@@ -601,6 +618,12 @@ export function validateManifest(value: unknown): string[] {
   // Optional (additive in schema v1): absent is valid; present must be sha or null.
   const kh = (m.fingerprint as { knowledgeHead?: unknown } | undefined)?.knowledgeHead;
   if (kh !== undefined && kh !== null && typeof kh !== "string") errors.push("fingerprint.knowledgeHead must be a string or null");
+  // Optional (additive in 0.14.0): absent = the legacy raw-text hash; an algorithm this
+  // version does not know is never silently read as a supported one.
+  const ah = (m.fingerprint as { artifactHash?: unknown } | undefined)?.artifactHash;
+  if (ah !== undefined && !(SUPPORTED_ARTIFACT_HASHES as readonly unknown[]).includes(ah)) {
+    errors.push(`fingerprint.artifactHash ${JSON.stringify(ah)} is not a supported algorithm (supported: ${SUPPORTED_ARTIFACT_HASHES.join(", ")}; absent = legacy raw-text sha256)`);
+  }
   if (!m.coverage || typeof m.coverage !== "object") errors.push("coverage missing");
   if (!m.documents || typeof m.documents !== "object") errors.push("documents missing");
   if (!Array.isArray(m.auditTopics)) errors.push("auditTopics is not an array");

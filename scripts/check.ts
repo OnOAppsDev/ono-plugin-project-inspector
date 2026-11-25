@@ -39,11 +39,12 @@ const PHASES: Phase[] = [
     suites: [
       "knowledge-model", "inspection-state", "repo-knowledge", "knowledge-evidence", "knowledge-refresh-guard", "resolve-repo-root", "work-branch",
       "git-paths", "freshness-contract", "doc-header", "audit-recheck", "session-cost",
+      "line-endings", "document-preservation", "audit-line-endings", "freshness-ref",
     ],
   },
   { name: "Safety", why: "the hook that gates every Inspector write", suites: ["write-guard"] },
   { name: "Contracts", why: "instructions and code cannot drift apart", suites: ["agent-contract", "knowledge-templates"] },
-  { name: "Integration", why: "full pipelines, and repositories inspected by 0.11.x", suites: ["e2e-smoke", "compat-0.11"] },
+  { name: "Integration", why: "full pipelines, repositories inspected by 0.11.x, and the documented CRLF recovery", suites: ["e2e-smoke", "compat-0.11", "recovery"] },
 ];
 
 const NOT_PROVEN = [

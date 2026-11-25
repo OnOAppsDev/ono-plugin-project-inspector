@@ -96,6 +96,8 @@ function normalizeManifest(m: any): any {
   const n = normalize(m);
   if (n?.producedBy) n.producedBy.version = "<plugin version>";
   if (n?.fingerprint) n.fingerprint.gitHead = "<commit the manifest was generated at>";
+  // Additive (0.14.0): the artifact hash algorithm marker; checked separately below.
+  if (n?.fingerprint) delete n.fingerprint.artifactHash;
   return n;
 }
 /** Keys 0.13.0 adds to state.json (additive, schema v1); compared separately below. */
@@ -148,6 +150,7 @@ try {
   check("C4 the re-emitted manifest equals the 0.11.3 manifest (volatile fields aside)", JSON.stringify(normalizeManifest(emitted)) === JSON.stringify(normalizeManifest(storedManifest)));
   check("C4 the volatile fields are exactly the expected ones", emitted.producedBy.version === CURRENT_VERSION && emitted.fingerprint.gitHead === git(repo, "rev-parse", "HEAD") && emitted.fingerprint.knowledgeHead === SOURCE_COMMIT);
   check("C4 content fingerprints (sha256 of every artifact) are byte-identical", JSON.stringify(emitted.fingerprint.artifacts) === JSON.stringify(storedManifest.fingerprint.artifacts));
+  check("C4 the only manifest addition is the 0.14.0 hash marker: canonical sha256-lf, equal to the 0.11.3 LF hashes above", emitted.fingerprint.artifactHash === "sha256-lf" && storedManifest.fingerprint.artifactHash === undefined);
   const sync = helper(repo, "inspection-state.ts", "sync", repo);
   check("C4 state sync under Node.js exits 0", sync.code === 0, sync.stdout + sync.stderr);
   const synced = readJson(join(repo, ".ono", "state.json"));

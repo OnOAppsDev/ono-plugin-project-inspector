@@ -11,7 +11,9 @@
  *   Status and File reference — new rows may be added, none may disappear;
  * - every `Approved <YYYY-MM-DD>` approval note audit-approve recorded is kept;
  * - every CLAUDE.md `audit-sync:*` managed block is still present and
- *   byte-identical (audit-sync owns them; a refresh must not touch them).
+ *   byte-identical (audit-sync owns them; a refresh must not touch them) — apart
+ *   from line endings (0.14.0): a rewrite that only turns CRLF into LF, or back
+ *   (Git for Windows, core.autocrlf=true), keeps the block's content, so it passes.
  *
  * It is a check, not a repair: on a violation it reports and keeps the
  * snapshot, and the agent stops so the developer can restore from Git.
@@ -30,6 +32,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync, rmSync } from "fs";
 import { join, sep } from "path";
 import { assertWritable, guardWrite } from "./work-branch.ts";
+import { toLf } from "./markdown-text.ts";
 import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 const WORKTREE_MARKER = `${sep}.claude${sep}worktrees${sep}`;
@@ -117,7 +120,7 @@ export function findViolations(before: Snapshot, repoRoot: string): string[] {
   const blocks = parseManagedBlocks(readIfExists(repoRoot, "CLAUDE.md"));
   for (const [name, body] of Object.entries(before.managedBlocks)) {
     if (!(name in blocks)) violations.push(`CLAUDE.md managed block <!-- ${name} --> was removed.`);
-    else if (blocks[name] !== body) violations.push(`CLAUDE.md managed block <!-- ${name} --> content changed.`);
+    else if (toLf(blocks[name]) !== toLf(body)) violations.push(`CLAUDE.md managed block <!-- ${name} --> content changed.`);
   }
   return violations;
 }

@@ -23,6 +23,7 @@ Consumers: `ono-mobile-dev-plugin` (and future Ono plugins), via their own deter
 7. **Knowledge-authoring HEAD is never advanced by a re-emit.** `fingerprint.knowledgeHead` is the git HEAD at which the source-backed knowledge (`CLAUDE.md` stack/commands/structure, `docs/project/*.md`) was last actually generated from repository source. It advances only when a source-backed inspection stage regenerates that knowledge — never when the manifest is merely re-emitted (after an audit approval, `audit-sync`, or `/inspect-sync`). A multi-stage regeneration advances it only once every stage in it has regenerated at the same HEAD. It is never set to the current HEAD as a default.
 8. **Every persisted surface, capability and relationship is evidence-backed.** Before `record-knowledge` certifies a source-backed stage, `scripts/knowledge-evidence.ts verify` resolves every evidence ref against the repository's current source (see "Evidence refs"); a fact that cannot be proven stops the stage. Relationships are direct (first-degree) edges proven by a concrete source edge — never by naming or semantic similarity — and are never scored or expanded transitively. Volatile platform knowledge (SDK/OS release notes, OS capabilities, vendor bugs, recommended practices) is never persisted; a repository workaround for one is recorded as a repository fact with its location.
 9. **Advisory, never authoritative over code.** Project Knowledge describes the repository at `knowledgeHead`. The current repository source is authoritative whenever the two disagree. Project Knowledge never decides Dev Plugin routing: `platformHints`, `surfaces[].platform` and `surfaces[].formFactor` are descriptive, and `formFactor` (`handheld | desktop | tv | wearable | other`) is deliberately not a `device_type`.
+10. **Line endings never change the knowledge** (0.14.0). An LF and a CRLF checkout of the same commit (Git for Windows, `core.autocrlf=true`) produce the same manifest: documents are parsed from LF-normalized text, and `fingerprint.artifacts` uses the canonical `sha256-lf` hash (see "Artifact hashes").
 
 ## Obligations the consumer accepts
 
@@ -47,7 +48,8 @@ See the `RepoKnowledge` interface in `scripts/repo-knowledge.ts` for the authori
 | `generatedAt` | ISO-8601 | Emit time. The only field that varies between two emits over identical inputs. |
 | `fingerprint.gitHead` | sha \| null | HEAD at emit time. Differs from current HEAD → `stale-head`. Advances on every emit, including a metadata-only re-emit, so it does **not** establish that source-backed knowledge is current. |
 | `fingerprint.knowledgeHead` | sha \| null \| absent | *Optional (additive, v1).* HEAD at which source-backed knowledge was last generated (Guarantee 7). `null` = not recorded (an inspection completed before the producer recorded it). Absent = manifest written by a producer older than 0.10.0; treat exactly as `null`. Always an ancestor-or-equal of `gitHead` in normal history. |
-| `fingerprint.artifacts` | `{relpath: sha256 \| null}` | Per-source-document hash. `null` = the document did not exist. A mismatch → `stale-artifacts` for the categories that document backs. |
+| `fingerprint.artifactHash` | `"sha256-lf"` \| absent | *Optional (additive, 0.14.0).* The algorithm of `fingerprint.artifacts` — see "Artifact hashes". Absent = the legacy raw-text hash (producers before 0.14.0). |
+| `fingerprint.artifacts` | `{relpath: sha256 \| null}` | Per-source-document hash, computed with `fingerprint.artifactHash`. `null` = the document did not exist. A mismatch → `stale-artifacts` for the categories that document backs. |
 | `coverage.<category>` | `populated \| partial \| unknown` | Per-category trust for `stack`, `commands`, `structure`, `inventory`, `conventions`, `integrations`, `auditTopics`, and (additive) `surfaces`, `capabilities`. `partial` for the additive categories means some rows were rejected as malformed and are not indexed. |
 | `stack` | `{languages, frameworks, platformHints, runtimeTooling, packageManagers}` | Sorted string lists. `platformHints` is **advisory only**. |
 | `commands` | `{install, run, test, build}` | Strings or `null`. `null` means not known. |
@@ -68,6 +70,32 @@ Wherever the manifest carries evidence (`surfaces[].evidence`, `sharedCode[].evi
 ### Surface-scoped knowledge
 
 Conventions are written once as the shared body of a `docs/project/patterns.md` section; a surface that differs gets `### <Section> (<surface-id>)` under that section, indexed in `documents.conventions.surfaceAnchors`. To read the conventions for a confirmed surface, read the shared section, then that surface's override for the section if `surfaceAnchors` lists one. Inventory and integration rows carry a `Surface` cell (`all` or surface ids) in the documents themselves.
+
+## Artifact hashes
+
+`fingerprint.artifacts` holds one SHA-256 (hex) per source document. What is hashed depends on `fingerprint.artifactHash`:
+
+| `artifactHash` | Produced by | Hashed text |
+|---|---|---|
+| absent (legacy) | 0.9.0 – 0.13.0 | The document exactly as read from the working tree at emit time (UTF-8 text, line endings as stored on disk). An LF and a CRLF checkout of the same commit hash differently. |
+| `"sha256-lf"` | 0.14.0+ | The document's UTF-8 text with every CRLF pair replaced by LF (a lone CR is kept). Every other byte — content, a UTF-8 BOM, a final newline — counts. |
+
+For a document stored with LF line endings — every macOS and Linux checkout, and the committed Git blob — the two algorithms give **the same hash**, so every legacy manifest emitted from LF files is already a valid `sha256-lf` manifest, and re-emitting it with 0.14.0 changes only the added marker. Any change to a document's content changes its hash under both algorithms; under `sha256-lf` a change of line endings alone does not.
+
+Any other `artifactHash` value is an algorithm this contract version does not define: the producer's own `validate` rejects it, and a consumer must not read it as either algorithm above (treat every artifact as `stale-artifacts`: derive its categories live).
+
+### How a consumer compares hashes
+
+For each `relpath` in `fingerprint.artifacts`, with `recorded` its value and `text` the current file read as UTF-8 (absent file: `null`):
+
+1. `recorded === null` matches only an absent file; an absent file matches only `null`.
+2. `artifactHash === "sha256-lf"`: matches when `recorded === sha256(lf(text))`, where `lf` replaces every `\r\n` with `\n`.
+3. `artifactHash` absent (legacy): matches when `recorded === sha256(text)` **or** `recorded === sha256(lf(text))` **or** `recorded === sha256(crlf(lf(text)))`, where `crlf` turns every `\n` into `\r\n`. The three encodings of the same normalized text cover a legacy manifest emitted from an LF checkout or from a uniformly CRLF checkout, read from either.
+4. Any other `artifactHash`: no artifact matches.
+
+Every accepted encoding is a deterministic encoding of the same LF-normalized text, so a content change is never accepted. A legacy manifest emitted from a document with **mixed** line endings is recognised only on a checkout with the same bytes; elsewhere it reports `stale-artifacts`, which is the safe outcome.
+
+**Ono Mobile Dev Plugin 0.9.0** compares `sha256(text)` only (rule 3, first encoding, for every manifest). It therefore keeps working unchanged on LF checkouts, and on a CRLF checkout reports `stale-artifacts` for a 0.14.0 manifest and derives those categories live — degraded, never wrong. Full cross-platform matching arrives with a consumer that implements the rules above.
 
 ## Category → backing document
 

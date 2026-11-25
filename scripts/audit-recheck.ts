@@ -21,6 +21,16 @@
  * tokens in its body that exist in the repository. Rename detection runs on the whole
  * diff, so a finding that cites only the old path of a renamed file is affected.
  *
+ * Line endings (0.14.0): findings are parsed from the LF-normalized text, so an audit file
+ * and its CRLF checkout (Git for Windows, core.autocrlf=true) give the same findings and the
+ * same ids. 0.13.0 parsed CRLF text as-is and could derive a different id for a finding
+ * whose `**File:**` line it then failed to read; for such a finding `legacyId` names that
+ * 0.13.0 id, so record-recheck can carry an existing record forward instead of orphaning it.
+ * `legacyId` is BEST-EFFORT and deliberately conservative: it is offered only when the 0.13.0
+ * identity is unambiguous in this file (its heading + files key occurs once, and it is not the
+ * current id of another finding); record-recheck adds its own checks against the stored record.
+ * An unmatched legacy record is never moved or deleted and stays listed for human review.
+ *
  * Nothing here approves anything, changes AUDIT.md, or edits an audit file.
  *
  * Exit codes: 0 scope printed · 1 usage / unknown topic / not Approved / no audit file
@@ -30,6 +40,7 @@ import { createHash } from "crypto";
 import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { toLf } from "./markdown-text.ts";
 import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
 
 export interface Finding {
@@ -38,6 +49,10 @@ export interface Finding {
   severity: string | null;
   /** Cited, repository-relative paths (exact text, normalized only for ./ and :line suffixes). */
   files: string[];
+  /** The id Inspector 0.13.0 derived from this file's CRLF text, when it differs from `id` and is unambiguous (0.14.0). */
+  legacyId?: string;
+  /** The cited files 0.13.0 parsed for that legacy id (present with `legacyId`). */
+  legacyFiles?: string[];
 }
 
 export interface Change { path: string; change: "modified" | "deleted" | "renamed" | "added" | "type-changed"; to?: string }
@@ -111,7 +126,27 @@ const looksLikePath = (s: string) => /\//.test(s) || /\.[A-Za-z0-9]{1,10}$/.test
 
 /** Parse the findings of an audit file. `exists` decides which body tokens are real paths. */
 export function parseFindings(md: string, exists: (rel: string) => boolean): Finding[] {
-  const lines = md.split("\n");
+  const findings = findingsOf(toLf(md).split("\n"), exists).map(({ key, ...f }) => f);
+  if (!md.includes("\r\n")) return findings;
+  // The 0.13.0 parse of the same CRLF text (raw lines). Block structure is identical — the
+  // `###` heading rule tolerated the CR — so the two lists align one-to-one by position.
+  const legacy = findingsOf(md.split("\n"), exists);
+  if (legacy.length !== findings.length || legacy.some((l, i) => l.heading !== findings[i].heading)) return findings;
+  // Position decides between findings that share a legacy key (their ids differ only by an
+  // occurrence suffix), and the order may have changed since 0.13.0 recorded them: such a
+  // match is ambiguous, so none of them gets a legacyId. Same for a legacy id that is some
+  // finding's current id.
+  const keyCount = new Map<string, number>();
+  for (const l of legacy) keyCount.set(l.key, (keyCount.get(l.key) ?? 0) + 1);
+  const currentIds = new Set(findings.map((f) => f.id));
+  return findings.map((f, i) => {
+    const l = legacy[i];
+    if (l.id === f.id || keyCount.get(l.key) !== 1 || currentIds.has(l.id)) return f;
+    return { ...f, legacyId: l.id, legacyFiles: l.files };
+  });
+}
+
+function findingsOf(lines: string[], exists: (rel: string) => boolean): Array<Finding & { key: string }> {
   let start = lines.findIndex((l) => /^##\s+Findings\s*$/i.test(l));
   let end = lines.length;
   if (start === -1) start = 0;
@@ -147,7 +182,7 @@ export function parseFindings(md: string, exists: (rel: string) => boolean): Fin
     const n = (seen.get(key) ?? 0) + 1;
     seen.set(key, n);
     const id = `F-${sha(key).slice(0, 12)}${n > 1 ? `-${n}` : ""}`;
-    return { id, heading, severity, files: sorted };
+    return { id, heading, severity, files: sorted, key };
   });
 }
 
@@ -238,8 +273,11 @@ export function computeScope(repoRoot: string, topicOrFile: string): RecheckScop
   });
 
   const prev = record?.verification?.findings ?? {};
+  // A 0.13.0 record carried forward under its 0.14.0 id (record-recheck sets `legacyId`) is
+  // listed once, under the current id; the original record itself is kept untouched.
+  const superseded = new Set(Object.values(prev).map((v: any) => v?.legacyId).filter((x): x is string => typeof x === "string"));
   const needsHumanReview = [
-    ...Object.entries(prev).filter(([, v]) => v?.needsHumanReview && !v?.humanReviewedAt).map(([id]) => id),
+    ...Object.entries(prev).filter(([id, v]) => v?.needsHumanReview && !v?.humanReviewedAt && !superseded.has(id)).map(([id]) => id),
     ...scoped.filter((f) => f.scope === "cannot-scope").map((f) => f.id),
   ];
   return {
