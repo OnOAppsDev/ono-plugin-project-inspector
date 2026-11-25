@@ -144,8 +144,10 @@ try {
   // --- N8: implementation contract ------------------------------------------------------------------------------
   {
     const src = readFileSync(join(import.meta.dirname, "inspection-state.ts"), "utf-8");
-    check("N8 the diff uses -z with core.quotePath=false", /gitPaths\(repoRoot, \["diff", "-z", "--relative", "--name-only", "--no-renames"/.test(src) && /\["-c", "core\.quotePath=false", \.\.\.args\]/.test(src));
-    check("N8 ls-tree uses -z", /gitPaths\(repoRoot, \["ls-tree", "-z", "--name-only", rev\]\)/.test(src));
+    // 0.14.0: the freshness algorithm reads Git through its KnowledgeSource (knowledge-source.ts).
+    const ks = readFileSync(join(import.meta.dirname, "knowledge-source.ts"), "utf-8");
+    check("N8 the diff uses -z with core.quotePath=false", /source\.gitPaths\(\["diff", "-z", "--relative", "--name-only", "--no-renames"/.test(src) && /\["-c", "core\.quotePath=false", \.\.\.args\]/.test(ks) && /gitPaths: \(args\) => gitPathList\(/.test(ks));
+    check("N8 ls-tree uses -z", /source\.gitPaths\(\["ls-tree", "-z", "--name-only", rev\]\)/.test(src));
     check("N8 no newline-split git path listing remains", !/\["(diff|ls-tree)"[^\]]*\]\)\s*\?\?\s*""\)\.split\("\\n"\)/.test(src) && !/diff\.split\("\\n"\)/.test(src));
     check("N8 a failed ls-tree is BASELINE_UNKNOWN, never COMPLETE", /git ls-tree of knowledgeHead or HEAD failed/.test(src));
   }

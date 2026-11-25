@@ -31,8 +31,10 @@
  *                                           current git HEAD (the knowledge-authoring
  *                                           HEAD), then write
  *   migrate <repo-root>                     Migrate an older schema to current, then write
- *   freshness <repo-root>                   READ-ONLY. Print the knowledge freshness contract
- *                                           (Guardian), exit 0. Works on every branch.
+ *   freshness <repo-root> [--ref <rev>]     READ-ONLY. Print the knowledge freshness contract
+ *                                           (Guardian), exit 0. Works on every branch. With
+ *                                           --ref (0.14.0): one exact commit, read from Git
+ *                                           objects only (docs/freshness-contract.md).
  *   record-approval <repo-root> <topic>     After a HUMAN approval (/inspect-approve): record
  *                                           the HEAD it was approved at, once; then write
  *   record-recheck <repo-root> <topic> <results.json|->
@@ -44,7 +46,7 @@
  *
  * Exit codes:
  *   0 - success (for `detect`, always 0; read its JSON stdout)
- *   1 - usage error or unreadable/repo problem
+ *   1 - usage error (including a malformed freshness argument) or unreadable/repo problem
  *   2 - state file present but invalid/corrupt JSON
  *   5 - refused: a writing command on main, master or a detached HEAD (scripts/work-branch.ts)
  */
@@ -53,10 +55,15 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from
 import { execFileSync } from "child_process";
 import { join, sep } from "path";
 import { slugify } from "./slugify.ts";
-import { headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model.ts";
+import { CAPABILITIES_DOC, headingAnchors, isUnder, parseCapabilityMap, parseEvidenceRef, parseSurfaceModel } from "./knowledge-model.ts";
+import {
+  commitSource, gitPathList, gitText, malformedRevision, objectReadPolicy, resolveRevision, worktreeSource,
+  type KnowledgeSource,
+} from "./knowledge-source.ts";
 import { assertWritable, guardWrite } from "./work-branch.ts";
 import { isEntryPoint, useBlockingOutput } from "./entrypoint.ts";
-import { findHeader, insertHeader, isStampable, sha256, shortCommit, stripHeader, todayUtc, type Header } from "./doc-header.ts";
+import { bodyHash, bodyHashMatches, findHeader, insertHeader, isStampable, shortCommit, stripHeader, todayUtc, type Header } from "./doc-header.ts";
+import { toLf } from "./markdown-text.ts";
 import { candidateCommit, commitTouches, computeScope, findRow, RecheckError, type TopicRecord } from "./audit-recheck.ts";
 
 /** Bump when the shape of state.json changes; add a migration in migrateState(). */
@@ -203,16 +210,17 @@ function isStageComplete(stage: RegistryStage, repoRoot: string, counts: Counts)
  * missing artifact or a missing section anchor. Empty = the output is in the
  * current model. Headings, not prose, are checked, so this is deterministic.
  */
-export function modelGaps(stage: RegistryStage, repoRoot: string): string[] {
+export function modelGaps(stage: RegistryStage, from: string | KnowledgeSource): string[] {
+  const source = typeof from === "string" ? worktreeSource(from) : from;
   const gaps: string[] = [];
   for (const req of stage.knowledgeModel) {
     const [rel, anchor] = req.split("#");
-    const p = join(repoRoot, rel);
-    if (!existsSync(p)) {
+    const text = source.read(rel);
+    if (text === null) {
       gaps.push(req);
       continue;
     }
-    if (anchor && !headingAnchors(readFileSync(p, "utf-8")).includes(`#${anchor}`)) gaps.push(req);
+    if (anchor && !headingAnchors(text).includes(`#${anchor}`)) gaps.push(req);
   }
   return gaps;
 }
@@ -449,29 +457,10 @@ function isAnalysisManifest(rel: string): boolean {
   );
 }
 
-function git(repoRoot: string, args: string[]): string | null {
-  try {
-    return execFileSync("git", args, { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return null;
-  }
-}
+const git = (repoRoot: string, args: string[]): string | null => gitText(repoRoot, args);
 
-/**
- * Path-listing git commands (0.13.0). Git C-quotes non-ASCII and special names in
- * its default output (`"docs/project/\327\241…md"`), and `core.quotePath=false`
- * alone still quotes names containing `"`, `\`, tabs or newlines. NUL-delimited
- * output (`-z`) is never quoted, so each entry is the exact path Git stores —
- * the identity every later comparison and git call uses. Returns null on failure.
- */
-export function gitPaths(repoRoot: string, args: string[]): string[] | null {
-  try {
-    const out = execFileSync("git", ["-c", "core.quotePath=false", ...args], { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 256 * 1024 * 1024 });
-    return out.split("\0").filter((p) => p.length > 0);
-  } catch {
-    return null;
-  }
-}
+/** NUL-delimited, unquoted Git path listing (0.13.0) — see knowledge-source.ts gitPathList. */
+export const gitPaths = (repoRoot: string, args: string[]): string[] | null => gitPathList(repoRoot, args);
 
 /**
  * Unicode-normalized form used ONLY to compare a Git path with a path recorded in
@@ -504,7 +493,27 @@ interface KnowledgeFreshness {
   affectedCapabilities: string[];
   affectedRelationships: string[];
   affectedSurfaces: string[];
+  /**
+   * Structured form of the signals above (0.14.0), for the public contract's `signals`.
+   * Null whenever the result is not established. Counts are over the FULL changed list.
+   */
+  structured: { analysis: AnalysisCounts; model: ModelGap[] } | null;
 }
+
+/** One knowledge-model requirement a source-backed stage's output lacks. */
+interface ModelGap { stage: string; requirement: string }
+
+/** Distinct changed source files per signal (top-level entries: distinct entry names). */
+interface AnalysisCounts {
+  buildManifests: number;
+  topLevelAdded: number;
+  topLevelRemoved: number;
+  surfaceEvidence: number;
+  /** Declared surfaces whose recorded evidence (or Shared Code evidence) contains a changed file. */
+  surfaceEvidenceSurfaces: string[];
+}
+
+const emptyAnalysis = (): AnalysisCounts => ({ buildManifests: 0, topLevelAdded: 0, topLevelRemoved: 0, surfaceEvidence: 0, surfaceEvidenceSurfaces: [] });
 
 const MAX_LISTED_FILES = 50;
 
@@ -534,22 +543,24 @@ function refreshStages(
     .map((st) => st.id);
 }
 
-function readIfPresent(repoRoot: string, rel: string): string | null {
-  const p = join(repoRoot, rel);
-  return existsSync(p) ? readFileSync(p, "utf-8") : null;
-}
-
 /** Which recorded surfaces / capabilities / relationships a set of changed files touches. */
-function attribute(repoRoot: string, changed: string[]) {
-  const surfaceModel = parseSurfaceModel(readIfPresent(repoRoot, "CLAUDE.md"));
-  const map = parseCapabilityMap(readIfPresent(repoRoot, "docs/project/capabilities.md"));
+function attribute(source: KnowledgeSource, changed: string[]) {
+  const surfaceModel = parseSurfaceModel(source.read("CLAUDE.md"));
+  const map = parseCapabilityMap(source.read(CAPABILITIES_DOC));
   // Comparison only: each changed path keeps its exact Git identity in the output.
   const under = (rel: string, root: string) => isUnder(comparablePath(rel), comparablePath(root));
   const touches = (refs: string[]) => refs.some((ref) => changed.some((rel) => under(rel, parseEvidenceRef(ref).path)));
 
-  const surfaceEvidence = [...surfaceModel.surfaces.flatMap((s) => s.evidence), ...surfaceModel.sharedCode.flatMap((c) => c.evidence)]
-    .map((ref) => parseEvidenceRef(ref).path);
-  const surfaceSignals = changed.filter((rel) => surfaceEvidence.some((p) => under(rel, p))).map((rel) => `surface evidence changed: ${rel}`);
+  // Recorded surface evidence, each path with the surfaces it is evidence for (a Shared Code
+  // row's evidence counts for every surface sharing that code).
+  const declared = new Set(surfaceModel.surfaces.map((s) => s.id));
+  const evidence = [
+    ...surfaceModel.surfaces.flatMap((s) => s.evidence.map((ref) => ({ path: parseEvidenceRef(ref).path, surfaces: [s.id] }))),
+    ...surfaceModel.sharedCode.flatMap((c) => c.evidence.map((ref) => ({ path: parseEvidenceRef(ref).path, surfaces: c.sharedBy.filter((id) => declared.has(id)) }))),
+  ];
+  const evidenceChanged = changed.filter((rel) => evidence.some((e) => under(rel, e.path)));
+  const evidenceSurfaces = new Set<string>();
+  for (const rel of evidenceChanged) for (const e of evidence) if (under(rel, e.path)) e.surfaces.forEach((id) => evidenceSurfaces.add(id));
 
   const affectedSurfaces = new Set<string>();
   for (const s of surfaceModel.surfaces) if (touches([...s.sourceRoots, ...s.evidence])) affectedSurfaces.add(s.id);
@@ -565,7 +576,8 @@ function attribute(repoRoot: string, changed: string[]) {
   const affectedRelationships = map.relationships.filter((r) => touches(r.evidence)).map((r) => r.id);
 
   return {
-    surfaceSignals,
+    evidenceChanged,
+    evidenceSurfaces: Array.from(evidenceSurfaces).sort(),
     affectedSurfaces: Array.from(affectedSurfaces).sort(),
     affectedCapabilities: affectedCapabilities.sort(),
     affectedRelationships: affectedRelationships.sort(),
@@ -573,19 +585,25 @@ function attribute(repoRoot: string, changed: string[]) {
 }
 
 /**
- * Compare the knowledge-authoring HEAD with the current HEAD. Only meaningful
- * once the inspection is complete; an in-progress inspection is still
- * producing its knowledge and keeps its normal resume behavior.
+ * Compare the knowledge-authoring HEAD with the source's HEAD (the checked-out HEAD, or the
+ * commit `--ref` resolved). Only meaningful once the inspection is complete; an in-progress
+ * inspection is still producing its knowledge and keeps its normal resume behavior. Every
+ * document and Git read goes through `source`, so the same algorithm serves both inputs.
  */
-function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, stages: RegistryStage[]): KnowledgeFreshness {
+function computeKnowledgeFreshness(
+  state: InspectionState,
+  repoRoot: string,
+  stages: RegistryStage[],
+  source: KnowledgeSource = worktreeSource(repoRoot)
+): KnowledgeFreshness {
   const knowledgeHead = state.repository?.knowledgeHead ?? null;
-  const currentHead = currentGitHead(repoRoot);
+  const currentHead = source.head;
   const noAttribution = { affectedCapabilities: [] as string[], affectedRelationships: [] as string[], affectedSurfaces: [] as string[] };
   const base = { knowledgeHead, currentHead, changedSourceCount: 0, changedSourceFiles: [] as string[], ...noAttribution };
   const none = { stages: [] as string[], analysisSignals: [] as string[], modelSignals: [] as string[] };
 
   if (!state.inspection?.stage3Complete) {
-    return { ...base, status: "NOT_APPLICABLE", reason: "Inspection not complete; knowledge is still being produced.", refreshPlan: none };
+    return { ...base, status: "NOT_APPLICABLE", reason: "Inspection not complete; knowledge is still being produced.", refreshPlan: none, structured: null };
   }
 
   // Knowledge-model gaps: output a source-backed stage produced under an older
@@ -593,10 +611,14 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
   // a second freshness mechanism and never move knowledgeHead.
   const gapStages = new Set<string>();
   const modelSignals: string[] = [];
+  const modelGapList: ModelGap[] = [];
   for (const st of stages.filter((x) => x.sourceBacked)) {
-    const gaps = modelGaps(st, repoRoot);
+    const gaps = modelGaps(st, source);
     if (gaps.length) gapStages.add(st.id);
-    for (const g of gaps) modelSignals.push(`knowledge model: ${st.id} output lacks ${g}`);
+    for (const g of gaps) {
+      modelSignals.push(`knowledge model: ${st.id} output lacks ${g}`);
+      modelGapList.push({ stage: st.id, requirement: g });
+    }
   }
   const plan = (drift: boolean, analysisSignals: string[]) => ({
     stages: refreshStages(stages, analysisSignals.length > 0, state, currentHead, { drift, gapStages }),
@@ -605,25 +627,27 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
   });
   const modelReason = `Project Knowledge predates the current knowledge model (${modelSignals.length} missing section(s)/artifact(s)).`;
 
-  const unknown = (reason: string): KnowledgeFreshness => ({ ...base, status: "BASELINE_UNKNOWN", reason, refreshPlan: plan(true, []) });
+  const unknown = (reason: string): KnowledgeFreshness => ({ ...base, status: "BASELINE_UNKNOWN", reason, refreshPlan: plan(true, []), structured: null });
   if (!knowledgeHead) {
     return unknown("No knowledge-authoring HEAD recorded (inspected before knowledgeHead existed). Freshness cannot be established.");
   }
   if (!currentHead) return unknown("Current git HEAD cannot be determined.");
-  if (git(repoRoot, ["cat-file", "-e", `${knowledgeHead}^{commit}`]) === null) {
+  if (source.git(["cat-file", "-e", `${knowledgeHead}^{commit}`]) === null) {
     return unknown(`Recorded knowledgeHead ${knowledgeHead.slice(0, 12)} is not in this repository's history (rewritten or shallow).`);
   }
+  // Established, and no source drift: zero of every analysis signal (not unknown).
+  const noDrift = { structured: { analysis: emptyAnalysis(), model: modelGapList } };
   const current = (reason: string): KnowledgeFreshness =>
     gapStages.size > 0
-      ? { ...base, status: "REFRESH_RECOMMENDED", reason: modelReason, refreshPlan: plan(false, []) }
-      : { ...base, status: "COMPLETE", reason, refreshPlan: none };
+      ? { ...base, status: "REFRESH_RECOMMENDED", reason: modelReason, refreshPlan: plan(false, []), ...noDrift }
+      : { ...base, status: "COMPLETE", reason, refreshPlan: none, ...noDrift };
   if (knowledgeHead === currentHead) return current("Knowledge was generated at the current HEAD.");
 
   // --relative: for a Project Root below the Git Root, report only files inside
   // the project, with paths relative to it (matching every recorded path and
   // `ls-tree`, which is already cwd-relative). A no-op at the Git Root.
   // NUL-delimited, unquoted (gitPaths): Hebrew, spaces, quotes and tabs arrive as the exact stored path.
-  const diff = gitPaths(repoRoot, ["diff", "-z", "--relative", "--name-only", "--no-renames", knowledgeHead, currentHead]);
+  const diff = source.gitPaths(["diff", "-z", "--relative", "--name-only", "--no-renames", knowledgeHead, currentHead]);
   if (diff === null) return unknown("git diff between knowledgeHead and HEAD failed.");
   const changed = Array.from(new Set(diff))
     .filter((rel) => !isInspectorOwned(rel))
@@ -634,23 +658,38 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
   // file recorded as surface evidence changed, or a top-level entry appeared or
   // disappeared (the repository structure CLAUDE.md records).
   const topAt = (rev: string): Set<string> | null => {
-    const names = gitPaths(repoRoot, ["ls-tree", "-z", "--name-only", rev]);
+    const names = source.gitPaths(["ls-tree", "-z", "--name-only", rev]);
     return names === null ? null : new Set(names);
   };
   const topBefore = topAt(knowledgeHead);
   const topNow = topAt(currentHead);
   // Evidence that cannot be read is never treated as "nothing changed".
   if (topBefore === null || topNow === null) return unknown("git ls-tree of knowledgeHead or HEAD failed.");
+  const analysis = emptyAnalysis();
+  const manifests = new Set<string>(), added = new Set<string>(), removed = new Set<string>();
   const signals = new Set<string>();
   for (const rel of changed) {
-    if (isAnalysisManifest(rel)) signals.add(`build/dependency manifest changed: ${rel}`);
+    if (isAnalysisManifest(rel)) {
+      signals.add(`build/dependency manifest changed: ${rel}`);
+      manifests.add(rel);
+    }
     const top = rel.split("/")[0];
-    if (!topBefore.has(top)) signals.add(`top-level entry added: ${top}`);
-    else if (!topNow.has(top)) signals.add(`top-level entry removed: ${top}`);
+    if (!topBefore.has(top)) {
+      signals.add(`top-level entry added: ${top}`);
+      added.add(top);
+    } else if (!topNow.has(top)) {
+      signals.add(`top-level entry removed: ${top}`);
+      removed.add(top);
+    }
   }
-  const attribution = attribute(repoRoot, changed);
-  for (const sig of attribution.surfaceSignals) signals.add(sig);
+  const attribution = attribute(source, changed);
+  for (const rel of attribution.evidenceChanged) signals.add(`surface evidence changed: ${rel}`);
   const analysisSignals = Array.from(signals).sort();
+  analysis.buildManifests = manifests.size;
+  analysis.topLevelAdded = added.size;
+  analysis.topLevelRemoved = removed.size;
+  analysis.surfaceEvidence = attribution.evidenceChanged.length;
+  analysis.surfaceEvidenceSurfaces = attribution.evidenceSurfaces;
 
   return {
     knowledgeHead,
@@ -663,12 +702,23 @@ function computeKnowledgeFreshness(state: InspectionState, repoRoot: string, sta
     affectedCapabilities: attribution.affectedCapabilities,
     affectedRelationships: attribution.affectedRelationships,
     affectedSurfaces: attribution.affectedSurfaces,
+    structured: { analysis, model: modelGapList },
   };
 }
 
-// --- freshness contract (Guardian, 0.13.0) ---
+// --- freshness contract (Guardian, 0.13.0; ref + signals 0.14.0) ---
 
 export const FRESHNESS_CONTRACT_VERSION = 1;
+
+/** Stable analysis-signal kinds, in output order. Consumers ignore kinds they do not know. */
+export const SIGNAL_KINDS = ["build-manifest-changed", "top-level-entry-added", "top-level-entry-removed", "surface-evidence-changed"] as const;
+
+export interface FreshnessSignals {
+  analysis: Array<{ kind: (typeof SIGNAL_KINDS)[number]; count: number; surfaces?: string[] }>;
+  model: ModelGap[];
+  refreshStages: string[];
+  affected: { surfaces: string[]; capabilities: string[]; relationships: string[] };
+}
 
 /**
  * The stable, machine-readable freshness result (contractVersion 1).
@@ -678,14 +728,21 @@ export const FRESHNESS_CONTRACT_VERSION = 1;
  *                                           knowledge predates the current model)
  *                       BASELINE_UNKNOWN    cannot be established: no knowledgeHead,
  *                                           HEAD unreadable, history rewritten/shallow,
- *                                           a git command failed, or unreadable state
+ *                                           a git command failed, unreadable state, or
+ *                                           (with --ref) an unresolvable revision or an
+ *                                           object that is not available locally
  *                       NOT_APPLICABLE      no completed inspection (none, or in progress)
  *   changedSourceCount  number of changed source files for COMPLETE (0) and
  *                       REFRESH_RECOMMENDED; null whenever it is not established
  *   checkedAt           ISO-8601 time this result was computed
- *   checkedHead         the HEAD the result describes (null if unreadable)
+ *   checkedHead         the commit the result describes (null if unreadable): the
+ *                       checked-out HEAD, or with --ref the resolved commit
  *   knowledgeHead       the knowledge-authoring HEAD (null if not recorded)
  *   reason              human-readable explanation (not for parsing)
+ *   signals             (additive, 0.14.0) the classification behind the status — see
+ *                       FreshnessSignals; null whenever the status is not established
+ *   ref                 (additive, 0.14.0; only with --ref) { requested, resolved }, resolved
+ *                       = checkedHead, or null when the revision did not resolve
  *
  * Commit-based: uncommitted source edits are not considered. A stored COMPLETE is
  * only valid while checkedHead equals the current HEAD.
@@ -698,17 +755,41 @@ export interface KnowledgeFreshnessContract {
   checkedHead: string | null;
   knowledgeHead: string | null;
   reason: string;
+  signals: FreshnessSignals | null;
+  ref?: { requested: string; resolved: string | null };
 }
 
-function freshnessContract(state: InspectionState, repoRoot: string, stages: RegistryStage[]): KnowledgeFreshnessContract {
+function publicSignals(k: KnowledgeFreshness): FreshnessSignals | null {
+  if (!k.structured || (k.status !== "COMPLETE" && k.status !== "REFRESH_RECOMMENDED")) return null;
+  const a = k.structured.analysis;
+  return {
+    analysis: [
+      { kind: "build-manifest-changed", count: a.buildManifests },
+      { kind: "top-level-entry-added", count: a.topLevelAdded },
+      { kind: "top-level-entry-removed", count: a.topLevelRemoved },
+      { kind: "surface-evidence-changed", count: a.surfaceEvidence, surfaces: a.surfaceEvidenceSurfaces },
+    ],
+    model: k.structured.model,
+    refreshStages: k.refreshPlan.stages,
+    affected: { surfaces: k.affectedSurfaces, capabilities: k.affectedCapabilities, relationships: k.affectedRelationships },
+  };
+}
+
+function freshnessContract(
+  state: InspectionState,
+  repoRoot: string,
+  stages: RegistryStage[],
+  source: KnowledgeSource = worktreeSource(repoRoot)
+): KnowledgeFreshnessContract {
   let k: KnowledgeFreshness;
   try {
-    k = computeKnowledgeFreshness(state, repoRoot, stages);
+    k = computeKnowledgeFreshness(state, repoRoot, stages, source);
   } catch (err) {
+    // An unreadable document or object (KnowledgeUnavailable) or any other failure: never COMPLETE.
     return {
       contractVersion: FRESHNESS_CONTRACT_VERSION, status: "BASELINE_UNKNOWN", changedSourceCount: null, checkedAt: nowIso(),
-      checkedHead: currentGitHead(repoRoot), knowledgeHead: state.repository?.knowledgeHead ?? null,
-      reason: `Freshness could not be computed: ${(err as Error).message}`,
+      checkedHead: source.head, knowledgeHead: state.repository?.knowledgeHead ?? null,
+      reason: `Freshness could not be computed: ${(err as Error).message}`, signals: null,
     };
   }
   const established = k.status === "COMPLETE" || k.status === "REFRESH_RECOMMENDED";
@@ -720,14 +801,60 @@ function freshnessContract(state: InspectionState, repoRoot: string, stages: Reg
     checkedHead: k.currentHead,
     knowledgeHead: k.knowledgeHead,
     reason: k.reason,
+    signals: publicSignals(k),
   };
 }
 
+const STATE_REL = ".ono/state.json";
+
+/** The contract for one exact commit (`freshness <root> --ref <rev>`). Never reads the working tree. */
+function refFreshness(repoRoot: string, requested: string): KnowledgeFreshnessContract {
+  const ref = { requested, resolved: null as string | null };
+  const unknown = (reason: string, checkedHead: string | null = null): KnowledgeFreshnessContract => ({
+    contractVersion: FRESHNESS_CONTRACT_VERSION, status: "BASELINE_UNKNOWN", changedSourceCount: null, checkedAt: nowIso(),
+    checkedHead, knowledgeHead: null, reason, signals: null, ref: { ...ref, resolved: checkedHead },
+  });
+  const read = objectReadPolicy(repoRoot);
+  if (!read.ok) return unknown(`Freshness at "${requested}" cannot be established without risking network access: ${read.reason}.`);
+  // Resolved exactly once; every later read uses the commit id, never the requested name.
+  const r = resolveRevision(repoRoot, requested, read.policy);
+  if (!r.ok) return unknown(`Revision not resolved: ${r.reason}.`);
+  let source: KnowledgeSource;
+  let text: string | null;
+  try {
+    source = commitSource(repoRoot, r.commit, read.policy);
+    text = source.read(STATE_REL);
+  } catch (err) {
+    return unknown(`Inspection state at ${r.commit.slice(0, 12)} could not be read: ${(err as Error).message}.`, r.commit);
+  }
+  if (text === null) {
+    return {
+      contractVersion: FRESHNESS_CONTRACT_VERSION, status: "NOT_APPLICABLE", changedSourceCount: null, checkedAt: nowIso(),
+      checkedHead: r.commit, knowledgeHead: null, reason: `No inspection state (${STATE_REL}) in this project at ${r.commit.slice(0, 12)}.`,
+      signals: null, ref: { requested, resolved: r.commit },
+    };
+  }
+  let state: InspectionState | null = null;
+  try {
+    state = JSON.parse(text) as InspectionState;
+  } catch {
+    state = null;
+  }
+  if (!state || typeof state !== "object" || !state.inspection) {
+    return unknown(`${STATE_REL} at ${r.commit.slice(0, 12)} is unreadable; freshness cannot be established.`, r.commit);
+  }
+  return { ...freshnessContract(state, repoRoot, loadInspectionStages(), source), ref: { requested, resolved: r.commit } };
+}
+
 /** Read-only: never writes, never refuses on a protected branch, always exits 0 with one JSON object. */
-function cmdFreshness(repoRoot: string): void {
+function cmdFreshness(repoRoot: string, ref: string | null): void {
+  if (ref !== null) {
+    console.log(JSON.stringify(refFreshness(repoRoot, ref), null, 2));
+    process.exit(0);
+  }
   const p = statePath(repoRoot);
   const head = currentGitHead(repoRoot);
-  const base = { contractVersion: FRESHNESS_CONTRACT_VERSION, changedSourceCount: null, checkedAt: nowIso(), checkedHead: head, knowledgeHead: null };
+  const base = { contractVersion: FRESHNESS_CONTRACT_VERSION, changedSourceCount: null, checkedAt: nowIso(), checkedHead: head, knowledgeHead: null, signals: null };
   let out: KnowledgeFreshnessContract;
   if (!existsSync(p)) {
     out = { ...base, status: "NOT_APPLICABLE", reason: "No inspection state (.ono/state.json) in this project." };
@@ -744,6 +871,26 @@ function cmdFreshness(repoRoot: string): void {
   }
   console.log(JSON.stringify(out, null, 2));
   process.exit(0);
+}
+
+/** `freshness <root> [--ref <rev> | --ref=<rev>]` arguments; anything else is a usage error. */
+export function parseFreshnessArgs(rest: string[]): { ref: string | null } | { error: string } {
+  let ref: string | null = null;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    let value: string | undefined;
+    if (a === "--ref") {
+      value = rest[i + 1];
+      if (value === undefined) return { error: "--ref needs a revision" };
+      i++;
+    } else if (a.startsWith("--ref=")) value = a.slice("--ref=".length);
+    else return { error: `unsupported argument ${JSON.stringify(a)}` };
+    if (ref !== null) return { error: "--ref given more than once" };
+    const bad = malformedRevision(value);
+    if (bad) return { error: `invalid --ref: ${bad}` };
+    ref = value;
+  }
+  return { ref };
 }
 
 // --- document headers (0.13.0) ---
@@ -795,7 +942,10 @@ function cmdStampDocs(repoRoot: string, rels: string[]): void {
     const inFile = findHeader(text);
     // Changed in this workflow? Against the recorded body when there is one, otherwise
     // against the committed version (a new or uncommitted document counts as changed).
-    const changed = record ? record.bodySha256 !== sha256(body) : committedBody(repoRoot, rel) !== body;
+    // Both comparisons ignore line endings (0.14.0): a CRLF checkout of an unchanged
+    // document is unchanged, and keeps its header date.
+    const committed = record ? null : committedBody(repoRoot, rel);
+    const changed = record ? !bodyHashMatches(record.bodySha256, body) : committed === null || toLf(committed) !== toLf(body);
     let header: Header;
     if (changed) {
       header = { version, knowledgeCommit: knowledgeCommitFor(rel, state, stages, repoRoot), updated: todayUtc() };
@@ -809,7 +959,9 @@ function cmdStampDocs(repoRoot: string, rels: string[]): void {
       continue;
     }
     const next = insertHeader(body, header);
-    records[rel] = { ...header, bodySha256: sha256(stripHeader(next)) };
+    // An unchanged document that needs no rewrite keeps its record exactly as stored: no
+    // state churn just to re-encode a legacy hash. Every record written is canonical.
+    if (changed || !record || next !== text) records[rel] = { ...header, bodySha256: bodyHash(stripHeader(next)) };
     const line = `Generated by ono-project-inspector ${header.version} · knowledge at ${header.knowledgeCommit} · updated ${header.updated}`;
     if (next === text) { results.push({ path: rel, action: "unchanged", header: line }); continue; }
     writes.push({ path: abs, text: next });
@@ -884,6 +1036,25 @@ function cmdRecordApproval(repoRoot: string, topic: string): void {
 }
 
 /**
+ * The 0.13.0 record of a finding's legacy id, when it provably describes this finding: the
+ * stored heading and cited files are the ones 0.13.0 derived for it, no other finding was ever
+ * recorded under the same identity with an occurrence suffix, and no current record has already
+ * claimed it. Anything less is ambiguous and nothing is carried (the record stays where it is).
+ */
+function legacyRecord(findings: Record<string, any>, f: { heading: string; legacyId?: string; legacyFiles?: string[] }): any {
+  if (!f.legacyId || !f.legacyFiles) return undefined;
+  const rec = findings[f.legacyId];
+  if (!rec || typeof rec !== "object") return undefined;
+  const norm = (h: unknown) => String(h ?? "").replace(/\s+/g, " ").trim();
+  if (norm(rec.heading) !== norm(f.heading)) return undefined;
+  if (Array.isArray(rec.files) && JSON.stringify([...rec.files].sort()) !== JSON.stringify([...f.legacyFiles].sort())) return undefined;
+  const base = f.legacyId.replace(/-\d+$/, "");
+  if (Object.keys(findings).some((id) => id !== f.legacyId && (id === base || id.startsWith(`${base}-`)))) return undefined;
+  if (Object.values(findings).some((v: any) => v?.legacyId === f.legacyId)) return undefined;
+  return rec;
+}
+
+/**
  * Record re-verification results. The scope is recomputed here and must still describe
  * HEAD; only its affected findings accept results. verifiedHead advances only when EVERY
  * affected finding has a result — a partial run records what it has and leaves the
@@ -942,8 +1113,14 @@ function cmdRecordRecheck(repoRoot: string, topic: string, source: string): void
   const missing = affected.filter((f) => !accepted.has(f.id)).map((f) => f.id);
   for (const f of scope.findings) {
     const r = accepted.get(f.id);
-    const prev = ver.findings[f.id];
-    const base = { heading: f.heading, severity: f.severity, files: f.files };
+    // 0.14.0: a record 0.13.0 stored under this finding's legacy (CRLF-parsed) id is carried
+    // forward under the current id — its sticky human-review requirement included. The legacy
+    // record itself is never modified or removed, and stays the record of last resort.
+    const carried = ver.findings[f.id] === undefined ? legacyRecord(ver.findings, f) : undefined;
+    const prev = ver.findings[f.id] ?? carried;
+    // Once carried, the link is kept on every later write, so the legacy record stays superseded.
+    const legacyId = carried ? f.legacyId : prev?.legacyId;
+    const base = { heading: f.heading, severity: f.severity, files: f.files, ...(legacyId ? { legacyId } : {}) };
     if (r) {
       const candidate = r.result === "fixed" ? candidateCommit(repoRoot, scope.baseline.head, r.paths) : null;
       ver.findings[f.id] = {
@@ -970,6 +1147,8 @@ function cmdRecordRecheck(repoRoot: string, topic: string, source: string): void
       ver.findings[f.id] = { ...(prev ?? { result: "open" }), ...base, pendingSince: prev?.pendingSince ?? at };
     } else if (!prev) {
       ver.findings[f.id] = { ...base, result: "open", note: "as approved; no cited file changed since the baseline" };
+    } else if (carried) {
+      ver.findings[f.id] = { ...carried, ...base };
     }
   }
   const complete = missing.length === 0;
@@ -991,10 +1170,11 @@ function cmdRecordRecheck(repoRoot: string, topic: string, source: string): void
   if (JSON.stringify(rec.approval ?? null) !== approvalBefore) { console.error("internal: approval record changed"); process.exit(1); }
   state.audits[scope.auditFile] = rec;
   writeState(repoRoot, state);
+  const superseded = new Set(Object.values(ver.findings).map((v: any) => v?.legacyId).filter((x): x is string => typeof x === "string"));
   console.log(JSON.stringify({
     ok: true, recorded: true, complete, auditFile: scope.auditFile, mode: scope.mode, baseline: scope.baseline.label,
     verifiedHead: ver.verifiedHead, verifiedAt: ver.verifiedAt, pending: missing,
-    needsHumanReview: Object.entries(ver.findings).filter(([, v]: any) => v.needsHumanReview).map(([id]) => id).sort(),
+    needsHumanReview: Object.entries(ver.findings).filter(([id, v]: any) => v.needsHumanReview && !superseded.has(id)).map(([id]) => id).sort(),
     note: "AI re-verification only — the topic's human approval is unchanged.",
   }, null, 2));
   process.exit(complete ? 0 : 3);
@@ -1033,7 +1213,7 @@ function cmdDetect(repoRoot: string): void {
         stage3Complete: state.inspection.stage3Complete,
         counts: state.counts,
         resume: state.resume,
-        knowledge: computeKnowledgeFreshness(state, repoRoot, loadInspectionStages()),
+        knowledge: (({ structured, ...k }) => k)(computeKnowledgeFreshness(state, repoRoot, loadInspectionStages())),
       },
       null,
       2
@@ -1224,8 +1404,14 @@ function main(): void {
   switch (command) {
     case "detect":
       return cmdDetect(repoRoot);
-    case "freshness":
-      return cmdFreshness(repoRoot);
+    case "freshness": {
+      const parsed = parseFreshnessArgs(rest);
+      if ("error" in parsed) {
+        console.error(`Usage: inspection-state.ts freshness <repo-root> [--ref <rev>] — ${parsed.error}.`);
+        process.exit(1);
+      }
+      return cmdFreshness(repoRoot, parsed.ref);
+    }
     case "init":
       return cmdInit(repoRoot, rest[0] ?? null);
     case "sync":

@@ -31,7 +31,8 @@ function check(name: string, cond: boolean, detail = ""): void {
   else { failures++; console.log(`FAIL  ${name}${detail ? `  — ${detail}` : ""}`); }
 }
 
-const FIELDS = ["changedSourceCount", "checkedAt", "checkedHead", "contractVersion", "knowledgeHead", "reason", "status"];
+// contractVersion 1. `signals` is additive (0.14.0); `ref` appears only with --ref (freshness-ref.test.ts).
+const FIELDS = ["changedSourceCount", "checkedAt", "checkedHead", "contractVersion", "knowledgeHead", "reason", "signals", "status"];
 const root = realpathSync(mkdtempSync(join(tmpdir(), "inspector-fresh-")));
 const fresh = (dir: string) => helper(dir, "inspection-state.ts", "freshness", dir);
 const put = (dir: string, rel: string, body: string) => { mkdirSync(dirname(join(dir, rel)), { recursive: true }); writeFileSync(join(dir, rel), body); };

@@ -20,7 +20,14 @@
  *
  * Nothing here is platform- or product-specific: the model is generic, and
  * every name in it (surface ids, capability ids) comes from the repository.
+ *
+ * Line endings (0.14.0): every parser reads the document through forParsing()
+ * (markdown-text.ts), so an LF document and its CRLF checkout (Git for Windows,
+ * core.autocrlf=true) yield the same model. Line numbers are unaffected: a CRLF
+ * pair becomes one LF.
  */
+
+import { forParsing } from "./markdown-text.ts";
 
 /** Inspector-neutral form factors. Deliberately NOT the Dev Plugin's device_type. */
 export const FORM_FACTORS = ["handheld", "desktop", "tv", "wearable", "other"] as const;
@@ -129,7 +136,7 @@ export function headingIndex(md: string): Heading[] {
   const out: Heading[] = [];
   const taken = new Set<string>();
   let parent: string | null = null;
-  md.split("\n").forEach((line, i) => {
+  forParsing(md).split("\n").forEach((line, i) => {
     const m = line.match(/^(#{2,3})\s+(.*)$/);
     if (!m) return;
     const base = slugAnchor(m[2]);
@@ -150,7 +157,7 @@ export function headingAnchors(md: string): string[] {
 
 /** Lines of the section a heading opens, up to the next heading of the same or a higher level. */
 function sectionLines(md: string, h: Heading): string[] {
-  const lines = md.split("\n");
+  const lines = forParsing(md).split("\n");
   const out: string[] = [];
   for (let i = h.line + 1; i < lines.length; i++) {
     const m = lines[i].match(/^(#{1,6})\s/);
@@ -162,7 +169,7 @@ function sectionLines(md: string, h: Heading): string[] {
 
 /** Body text directly under a heading, stopping at the next heading of any level. */
 export function directBody(md: string, h: Heading): string {
-  const lines = md.split("\n");
+  const lines = forParsing(md).split("\n");
   const out: string[] = [];
   for (let i = h.line + 1; i < lines.length && !/^#{1,6}\s/.test(lines[i]); i++) out.push(lines[i]);
   return out.join("\n").trim();
